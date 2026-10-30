@@ -1,0 +1,11 @@
+{
+  "name": "pf2e-exploration-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check scripts/handoff.js && node --check scripts/main.js",
+    "package": "powershell -NoProfile -File scripts/package.ps1"
+  }
+}

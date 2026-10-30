@@ -1,0 +1,10 @@
+{
+  "id": "pf2e-exploration-manager",
+  "title": "PF2e Exploration Manager",
+  "description": "Review exploration activities at encounter start and safely clear or restore native selections.",
+  "version": "0.1.0",
+  "authors": [{ "name": "Tom" }],
+  "compatibility": { "minimum": "14.361", "maximum": "14" },
+  "relationships": { "systems": [{ "id": "pf2e", "type": "system", "compatibility": { "minimum": "8.6.1", "maximum": "8.6.1" } }] },
+  "esmodules": ["scripts/main.js"]
+}
