@@ -96,8 +96,9 @@ async function automaticStart(combat) {
 }
 
 export function startCombat(wrapped, ...args) {
-  if (!game.user.isActiveGM || game.settings.get(ID, "cleanup") !== "automatic" || this.started) return wrapped(...args);
+  if (!game.user.isActiveGM || game.settings.get(ID, "cleanup") !== "automatic") return wrapped(...args);
   if (starts.has(this)) return starts.get(this);
+  if (this.started) return wrapped(...args);
   const pending = automaticStart(this).finally(() => starts.delete(this));
   starts.set(this, pending);
   return pending;

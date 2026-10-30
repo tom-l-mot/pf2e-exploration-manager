@@ -156,3 +156,17 @@ test("native round update failure propagates with recoverable receipt",async()=>
   await assert.rejects(startCombat.call(combat,()=>assert.fail()),/disk failed/);
   assert.deepEqual(actor.flags.clearReceipt,{combatUuid:combat.uuid,clearedIds:["scout"]});assert.equal(combat.started,false);
 });
+
+test("duplicate Begin during the final native refresh shares the pending start",async()=>{
+  const {combat,calls}=fixture({initiatives:[0],ids:[]});
+  const gate=deferred(),entered=deferred();
+  foundry.documents.ActiveEffect.registry.refresh=async()=>{entered.release();await gate.promise;};
+  const first=startCombat.call(combat,()=>assert.fail("unexpected fallback"));
+  await entered.promise;
+  assert.equal(combat.started,true);
+  const duplicate=startCombat.call(combat,()=>assert.fail("duplicate fallback"));
+  assert.equal(duplicate,first);
+  gate.release();
+  assert.equal(await duplicate,combat);
+  assert.equal(calls.filter(c=>c[0]==="hooks").length,1);
+});
