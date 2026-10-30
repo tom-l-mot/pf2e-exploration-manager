@@ -6,6 +6,8 @@ Version 0.1.0 targets Foundry VTT 14.361 or later in generation 14 and PF2e 8.6.
 
 ## Install locally
 
+Packaging requires Node.js and the Windows built-in `tar.exe`.
+
 1. Run `npm test`, `npm run check`, and `npm run package` from this directory.
 2. Close Foundry and extract `build/pf2e-exploration-manager-0.1.0.zip` into your Foundry user data `Data/modules` folder. The resulting folder must be `Data/modules/pf2e-exploration-manager/module.json`.
 3. Open a PF2e world and enable **PF2e Exploration Manager** in Manage Modules.

@@ -6,6 +6,6 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check scripts/handoff.js && node --check scripts/main.js",
-    "package": "powershell -NoProfile -File scripts/package.ps1"
+    "package": "node scripts/package.mjs"
   }
 }
