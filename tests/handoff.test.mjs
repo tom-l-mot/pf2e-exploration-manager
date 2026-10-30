@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ID, SCOUT, capture, clearEligible, restoreEligible, prepareScouting, snapshot, participants } from "../scripts/handoff.js";
+import { ID, SCOUT, INCREDIBLE_SCOUT, capture, clearEligible, restoreEligible, prepareScouting, snapshot, participants } from "../scripts/handoff.js";
 
 const hooks = new Map();
 globalThis.Hooks = { once: (name, fn) => hooks.set(name, fn), on: (name, fn) => hooks.set(name, fn) };
@@ -30,7 +30,7 @@ function fixture({ ids = ["scout"], initiative = 0, uuid = "Actor.hero" } = {}) 
   const settings = new Map([["cleanup", "review"], ["scout", true]]);
   globalThis.game = { user: { isActiveGM: true }, release: { generation: 14, build: 361 }, system: { id: "pf2e", version: "8.6.1" }, modules: new Map(), combats: new Map([[combat.id, combat]]), combat,
     settings: { get: (_module, key) => settings.get(key) } };
-  globalThis.fromUuid = async id => id === actor.uuid ? actor : { type: "effect", toObject: () => ({ _id: "canonical", name: "Scouting", type: "effect", system: { slug: "effect-scouting", rules: [] } }) };
+  globalThis.fromUuid = async id => id === actor.uuid ? actor : { type: "effect", toObject: () => ({ _id: "canonical", name: "Scouting", type: "effect", system: { slug: id === INCREDIBLE_SCOUT ? "effect-scout-incredible-scout" : "effect-scout", rules: [] } }) };
   return { actor, combat, settings };
 }
 
@@ -101,10 +101,34 @@ test("empty selection is never inferred to be owned, and pending receipt blocks 
   assert.deepEqual(actor.system.exploration, []);
   actor.system.exploration = ["scout"];
   actor.flags.clearReceipt = { combatUuid: "Combat.previous", clearedIds: ["scout"] };
+  game.combats.set("previous", { uuid: "Combat.previous" });
   await clearEligible(combat, { reviewed: true });
   assert.equal(actor.writes.length, 0);
   await restoreEligible(combat);
   assert.equal(actor.writes.length, 0);
+});
+
+test("a deleted encounter receipt is replaced atomically on the next eligible clear", async () => {
+  const { actor, combat } = fixture();
+  actor.flags.clearReceipt = { combatUuid: "Combat.deleted", clearedIds: ["defend"] };
+  assert.deepEqual((await clearEligible(combat, { reviewed: true })).changed, ["Hero"]);
+  assert.deepEqual(actor.writes, [{ "system.exploration": [], [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: ["scout"] } }]);
+  await restoreEligible(combat);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+});
+
+test("expired receipts do not bypass eligibility or overwrite malformed recovery data", async () => {
+  const { actor, combat } = fixture({ initiative: null });
+  const expired = { combatUuid: "Combat.deleted", clearedIds: ["defend"] };
+  actor.flags.clearReceipt = expired;
+  await clearEligible(combat, { reviewed: true });
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+  assert.deepEqual(actor.flags.clearReceipt, expired);
+  combat.combatants[0].initiative = 0;
+  actor.flags.clearReceipt = { combatUuid: "unknown", clearedIds: ["defend"] };
+  await clearEligible(combat, { reviewed: true });
+  assert.equal(actor.writes.length, 0);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
 });
 
 test("restore preserves user edits and filters missing or non-exploration items", async () => {
@@ -187,6 +211,23 @@ test("concurrent cleanup clicks produce one actor write", async () => {
   assert.equal(actor.writes.length, 1);
 });
 
+test("concurrent encounters sharing an actor preserve the first clear receipt", async () => {
+  const { actor, combat } = fixture();
+  const second = { ...combat, id: "second", uuid: "Combat.second", flags: {},
+    getFlag(_module, key) { return this.flags[key]; },
+    async setFlag(_module, key, data) { this.flags[key] = structuredClone(data); }
+  };
+  game.combats.set(second.id, second);
+  actor.beforeWrite = () => new Promise(resolve => setImmediate(resolve));
+  await Promise.all([clearEligible(combat, { reviewed: true }), clearEligible(second, { reviewed: true })]);
+  assert.equal(actor.writes.length, 1);
+  assert.deepEqual(actor.flags.clearReceipt, { combatUuid: combat.uuid, clearedIds: ["scout"] });
+  await restoreEligible(second);
+  assert.deepEqual(actor.system.exploration, []);
+  await restoreEligible(combat);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+});
+
 test("Incredible Scout uses its canonical effect and disabled Scout refuses", async () => {
   const { actor, combat, settings } = fixture({ initiative: null });
   combat.started = false;
@@ -246,11 +287,46 @@ test("Scout requires pre-roll explicit recipients, canonical effect, and prevent
   await prepareScouting(combat, actor.uuid, [actor.uuid]);
   assert.equal(actor.items.length, 3);
   actor.items.pop();
-  actor.items.push({ type: "effect", system: { rules: [{ key: "FlatModifier", type: "circumstance", selector: "initiative" }] } });
+  actor.items.push({ type: "effect", system: { rules: [{ key: "FlatModifier", type: "circumstance", selector: "initiative", slug: "scouting-bonus", value: 1 }] } });
   await prepareScouting(combat, actor.uuid, [actor.uuid]);
   assert.equal(actor.items.length, 3);
   combat.combatants[0].initiative = 0;
   await assert.rejects(prepareScouting(combat, actor.uuid, [actor.uuid]), /before anyone/);
+});
+
+test("unrelated circumstance modifiers do not suppress Scout", async () => {
+  for (const [selector, value] of [["initiative", -1], ["all", 1]]) {
+    const { actor, combat } = fixture({ initiative: null });
+    combat.started = false;
+    const unrelated = { type: "effect", system: { slug: "distraction", rules: [{ key: "FlatModifier", type: "circumstance", selector, value }] } };
+    actor.items.push(unrelated);
+    assert.deepEqual((await prepareScouting(combat, actor.uuid, [actor.uuid])).changed, ["Hero"]);
+    assert.equal(actor.items.at(-1).flags.core.sourceId, SCOUT);
+    assert.equal(actor.items[2], unrelated);
+  }
+});
+
+test("Incredible Scout can improve existing Scout without deleting it or adding duplicates", async () => {
+  const { actor, combat } = fixture({ initiative: null });
+  combat.started = false;
+  await prepareScouting(combat, actor.uuid, [actor.uuid]);
+  const scout = actor.items.at(-1);
+  actor.items.push({ type: "feat", system: { slug: "incredible-scout" } });
+  assert.deepEqual((await prepareScouting(combat, actor.uuid, [actor.uuid])).changed, ["Hero"]);
+  assert.equal(actor.items.at(-1).flags.core.sourceId, INCREDIBLE_SCOUT);
+  assert.equal(actor.items[2], scout);
+  await prepareScouting(combat, actor.uuid, [actor.uuid]);
+  assert.equal(actor.items.length, 5);
+});
+
+test("canonical Scout slugs and stronger effects prevent equivalent or weaker additions", async () => {
+  for (const slug of ["effect-scout", "effect-scout-incredible-scout"]) {
+    const { actor, combat } = fixture({ initiative: null });
+    combat.started = false;
+    actor.items.push({ type: "effect", system: { slug, rules: [] } });
+    assert.deepEqual((await prepareScouting(combat, actor.uuid, [actor.uuid])).skipped, ["Hero"]);
+    assert.equal(actor.items.length, 3);
+  }
 });
 
 test("Scout rechecks initiative and authority after loading canonical document", async () => {
