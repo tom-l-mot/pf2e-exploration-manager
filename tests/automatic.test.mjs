@@ -53,6 +53,36 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
 }
 const deferred = () => { let release; const promise = new Promise(resolve => {release=resolve;}); return {promise,release}; };
 
+test("alternate version numbers allow automatic handoff", async () => {
+  const { actor, combat } = fixture();
+  game.release = { generation: 15, build: 1 };
+  game.system.version = "9.0.0";
+  assert.equal(await startCombat.call(combat, () => assert.fail("native fallback")), combat);
+  assert.equal(combat.started, true);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout", "defend", "avoid"]);
+});
+
+test("another game system refuses automatic handoff before capture", async () => {
+  const { actor, combat } = fixture();
+  game.system.id = "other";
+  await assert.rejects(startCombat.call(combat, () => assert.fail("native fallback")), /active GM/);
+  assert.deepEqual(combat.flags, {});
+  assert.deepEqual(actor.system.exploration, ["scout", "defend", "avoid"]);
+});
+
+for (const missing of ["refresh", "sound", "hooks", "shield"]) test(`missing ${missing} API refuses automatic handoff before capture`, async () => {
+  const { actor, combat, calls } = fixture();
+  if (missing === "refresh") delete foundry.documents.ActiveEffect.registry.refresh;
+  if (missing === "sound") delete combat._playCombatSound;
+  if (missing === "hooks") delete Hooks.events;
+  if (missing === "shield") delete game.pf2e.actions.raiseAShield;
+  await assert.rejects(startCombat.call(combat, () => assert.fail("native fallback")), /requires.*API/);
+  assert.deepEqual(combat.flags, {});
+  assert.deepEqual(actor.system.exploration, ["scout", "defend", "avoid"]);
+  assert.equal(calls.length, 0);
+});
+
 test("Begin automatically prepares strongest Scout, preserves zero, rolls only missing with Stealth, clears then normalizes Defend", async () => {
   const {actor,combat,calls,effects} = fixture({initiatives:[0,null],incredible:true});
   const result = await startCombat.call(combat, () => assert.fail("native fallback"));

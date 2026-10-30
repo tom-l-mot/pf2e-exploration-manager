@@ -2,11 +2,10 @@
   "id": "pf2e-exploration-manager",
   "title": "PF2e Exploration Manager",
   "description": "Automatically hand off native exploration activities when an encounter begins, with recoverable cleanup.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "authors": [{ "name": "Tom" }],
-  "compatibility": { "minimum": "14.369", "maximum": "14.369" },
   "relationships": {
-    "systems": [{ "id": "pf2e", "type": "system", "compatibility": { "minimum": "8.6.1", "maximum": "8.6.1" } }],
+    "systems": [{ "id": "pf2e", "type": "system" }],
     "requires": [{ "id": "lib-wrapper", "type": "module" }]
   },
   "esmodules": ["scripts/main.js"]

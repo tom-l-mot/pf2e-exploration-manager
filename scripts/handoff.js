@@ -28,9 +28,6 @@ export function authority(combat) {
   if (!game.user.isActiveGM || game.system.id !== "pf2e" || game.combats.get(combat.id) !== combat) {
     throw new Error("Only the active GM can change a saved PF2e encounter.");
   }
-  if (game.release.generation !== 14 || game.release.build < 361 || game.system.version !== "8.6.1") {
-    throw new Error("This release requires Foundry 14.361 or later in generation 14 and PF2e 8.6.1.");
-  }
 }
 
 function queued(combat, operation) {

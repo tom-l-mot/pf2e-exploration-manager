@@ -77,7 +77,21 @@ export async function openingDefend(combat) {
 
 async function automaticStart(combat) {
   authority(combat);
-  if (game.release.generation !== 14 || game.release.build !== 369 || game.system.id !== "pf2e" || game.system.version !== "8.6.1") throw new Error("Automatic handoff requires Foundry 14.369 and PF2e 8.6.1.");
+  if (typeof combat._playCombatSound !== "function" || typeof combat.update !== "function" ||
+      typeof combat.rollInitiative !== "function" || typeof combat.setInitiative !== "function" ||
+      typeof globalThis.foundry?.documents?.ActiveEffect?.registry?.refresh !== "function" ||
+      typeof Hooks.callAll !== "function" || !Hooks.events ||
+      !Array.isArray(Hooks.events.combatStart ?? []) || (Hooks.events.combatStart ?? []).some(entry => typeof entry.fn !== "function")) {
+    throw new Error("Automatic handoff requires the combat, Hooks, and ActiveEffect APIs. Exploration selections were retained.");
+  }
+  for (const { actor } of participants(combat).values()) {
+    if (selection(actor).some(id => actor.items.get(id)?.system.slug === "defend") &&
+        actor.heldShield && !actor.heldShield.isBroken && !actor.heldShield.isDestroyed &&
+        !actor.items.find(item => item.type === "effect" && item.sourceId === SHIELD) &&
+        typeof game.pf2e?.actions?.raiseAShield !== "function") {
+      throw new Error("Automatic handoff requires the PF2e Raise a Shield API for Defend. Exploration selections were retained.");
+    }
+  }
   for (const [module, setting] of [["pf2e-automations", "deleteExploration"], ["pf2e-avoid-notice", "raiseShields"]]) {
     if (game.modules.get(module)?.active && game.settings.get(module, setting)) throw new Error(`Disable ${module}.${setting} before automatic exploration handoff.`);
   }
@@ -85,7 +99,7 @@ async function automaticStart(combat) {
   await prepareAutomaticScouting(combat);
   await rollMissing(combat);
   if (!game.user.isActiveGM) throw new Error("The active GM changed during encounter preparation.");
-  // Pinned Foundry 14.369 startCombat lifecycle, with returned hook work awaited.
+  // Await returned hook work before clearing the exploration selections it reads.
   combat._playCombatSound("startEncounter");
   const updateData = { round: 1, turn: 0 };
   await dispatchCombatStart(combat, updateData);

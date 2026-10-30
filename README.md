@@ -2,14 +2,14 @@
 
 Begin Encounter automatically prepares Scout, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
 
-Version 0.2.0 targets the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle. It requires libWrapper. This local package has no update manifest URL. Node fixture checks are separate from live Foundry verification.
+The manifest and runtime set no Foundry or PF2e version limits. Version 0.2.1 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. Other versions are untested and may have incompatible APIs. This local package has no update manifest URL. Node fixture checks are separate from live Foundry verification.
 
 ## Install locally
 
 Packaging requires Node.js and Windows `tar.exe`.
 
 1. Run `npm test`, `npm run check`, and `npm run package` in this directory.
-2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.0.zip` into the Foundry user data `Data/modules` folder.
+2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.1.zip` into the Foundry user data `Data/modules` folder.
 3. Enable libWrapper and PF2e Exploration Manager in the PF2e world.
 4. Set **Encounter cleanup** to **Automatic** if upgrading a world that saved Review or Off.
 5. When those modules are active, disable `pf2e-automations.deleteExploration` and `pf2e-avoid-notice.raiseShields`. Automatic start checks these ownership conflicts before changing documents.
@@ -39,7 +39,7 @@ The combat tracker's **Exploration** button and Configure Settings' **Exploratio
 - Restore before ending or deleting the encounter. A well-formed receipt whose encounter was deleted expires and can be replaced by a later eligible clear. A receipt for another live encounter or malformed recovery data remains untouched.
 - A failed operation may already have committed writes. Receipts preserve recovery for completed clears. Retry after resolving the error.
 - Foundry has no compare-and-swap guard for these updates. A player edit or GM handover can race a write already sent to the server. Fresh checks reduce that window but cannot eliminate it.
-- Nonactive-GM callers, started encounters, Review, and Off use the wrapped native start. Automatic execution is pinned to Foundry 14.369 and PF2e 8.6.1 and refuses other versions.
+- Nonactive-GM callers, started encounters, Review, and Off use the wrapped native start. Automatic execution checks the required combat, Hooks, ActiveEffect, and needed Raise a Shield APIs before capture or mutation. Missing APIs stop the operation and preserve exploration selections. API presence does not certify behavior on untested versions.
 
 ## Verify in a disposable world
 

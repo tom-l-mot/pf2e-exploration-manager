@@ -259,14 +259,18 @@ test("nonGM rejected and GM handover after capture await stops actor mutation", 
   assert.equal(actor.writes.length, 0);
 });
 
-test("unsupported runtime versions refuse document writes", async () => {
+test("other version numbers allow clear and restore while other systems refuse writes", async () => {
   const { actor, combat } = fixture();
-  game.system.version = "8.7.0";
-  await assert.rejects(clearEligible(combat, { reviewed: true }), /requires Foundry/);
+  game.system.id = "other";
+  await assert.rejects(clearEligible(combat, { reviewed: true }), /active GM/);
   assert.equal(actor.writes.length, 0);
-  game.system.version = "8.6.1";
+  game.system.id = "pf2e";
+  game.system.version = "9.0.0";
   game.release.generation = 15;
-  await assert.rejects(capture(combat), /requires Foundry/);
+  await clearEligible(combat, { reviewed: true });
+  assert.deepEqual(actor.system.exploration, []);
+  await restoreEligible(combat);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
 });
 
 test("synthetic token actor clears independently of its linked actor", async () => {

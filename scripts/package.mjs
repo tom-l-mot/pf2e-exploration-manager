@@ -5,7 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const { id, version } = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
+const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
+const { id, version } = manifest;
+assert.equal(manifest.compatibility, undefined);
+assert.deepEqual(manifest.relationships.systems, [{ id: "pf2e", type: "system" }]);
+assert.deepEqual(manifest.relationships.requires, [{ id: "lib-wrapper", type: "module" }]);
 const files = ["module.json", "README.md", "scripts/main.js", "scripts/handoff.js", "scripts/automatic.js"];
 const build = join(root, "build");
 const archive = join(build, `${id}-${version}.zip`);
