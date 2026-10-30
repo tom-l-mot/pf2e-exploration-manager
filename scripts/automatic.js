@@ -42,11 +42,13 @@ export async function rollMissing(combat) {
     const initiative = new actor.initiative.constructor(actor, { statistic: "stealth", tiebreakPriority: actor.initiative.tiebreakPriority });
     const result = await initiative.roll({ combatant: c, skipDialog: true, updateTracker: false });
     authority(combat);
+    if (Number.isFinite(c.initiative)) continue;
     if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
     await combat.setInitiative(c.id, result.roll.total, "stealth");
   }
   authority(combat);
-  if (ordinary.length) await combat.rollInitiative(ordinary, { skipDialog: true });
+  const missing = ordinary.filter(id => combat.combatants.some(c => c.id === id && !Number.isFinite(c.initiative)));
+  if (missing.length) await combat.rollInitiative(missing, { skipDialog: true });
   if (combat.combatants.some(c => !Number.isFinite(c.initiative))) throw new Error("Some initiative rolls did not complete. Exploration selections were retained.");
 }
 
