@@ -1,66 +1,52 @@
 # PF2e Exploration Manager
 
-Review native exploration selections when an encounter begins. Clear unchanged selections after initiative and restore selections cleared by this module. Prepare PF2e Scouting effects before initiative with explicit recipients.
+Begin Encounter automatically prepares Scout, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
 
-Version 0.1.0 targets Foundry VTT 14.361 or later in generation 14 and PF2e 8.6.1. The manifest limits PF2e compatibility to 8.6.1. The code was checked against locally installed sources. No live Foundry encounter has been tested. This is a local, manually installed package with no update manifest URL.
+Version 0.2.0 targets the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle. It requires libWrapper. This local package has no update manifest URL. Node fixture checks are separate from live Foundry verification.
 
 ## Install locally
 
-Packaging requires Node.js and the Windows built-in `tar.exe`.
+Packaging requires Node.js and Windows `tar.exe`.
 
-1. Run `npm test`, `npm run check`, and `npm run package` from this directory.
-2. Close Foundry and extract `build/pf2e-exploration-manager-0.1.0.zip` into your Foundry user data `Data/modules` folder. The resulting folder must be `Data/modules/pf2e-exploration-manager/module.json`.
-3. Open a PF2e world and enable **PF2e Exploration Manager** in Manage Modules.
-4. Open Configure Settings, then the module's **Exploration handoff** menu. The combat tracker also has an **Exploration** button for the active GM.
-
-Keep the native character-sheet exploration activity picker. This module does not replace it.
+1. Run `npm test`, `npm run check`, and `npm run package` in this directory.
+2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.0.zip` into the Foundry user data `Data/modules` folder.
+3. Enable libWrapper and PF2e Exploration Manager in the PF2e world.
+4. Set **Encounter cleanup** to **Automatic** if upgrading a world that saved Review or Off.
+5. When those modules are active, disable `pf2e-automations.deleteExploration` and `pf2e-avoid-notice.raiseShields`. Automatic start checks these ownership conflicts before changing documents.
 
 ## Run an encounter
 
-1. Add participating character tokens to the combat tracker and select their activities on their native sheets.
-2. Before anyone rolls initiative, open **Exploration** and click **Prepare scouting** if wanted. Choose a character with Scout selected. Check each intended recipient, including the scout if appropriate. No recipient is selected by default. Characters outside this encounter cannot receive the effect through this menu.
-3. Roll initiative and begin the encounter. Review the current and saved activities in the handoff.
-4. Resolve exploration benefits and wait for other encounter automation to finish. Click **Clear eligible selections** and confirm. Characters without initiative or with edited selections remain untouched.
-5. To undo this module's cleanup, click **Restore cleared selections** and confirm. Restore before ending or deleting the encounter. Foundry's End Encounter deletes its snapshot. Removed combatants can still restore when their actor UUID resolves.
+Select activities on the native sheets, add tokens to the combat tracker, and click **Begin Encounter** as the active GM.
 
-Scouting uses canonical PF2e effects. A participating source with Incredible Scout uses its canonical +2 effect. Otherwise it uses Scout's +1 effect. PF2e owns stacking, initiative calculation, and effect removal after the roll. Already rolled initiative is never changed. An existing Scout effect with an equal or stronger bonus skips that recipient. Incredible Scout can be added alongside an existing +1 Scout effect. Existing effects are preserved, and unrelated circumstance modifiers do not prevent scouting preparation. Custom Scout copies need a canonical source ID, Scout effect slug, or `scouting-bonus` modifier slug to be recognized.
+Automatic Scout uses the strongest participating allied character with Scout selected. It prepares canonical +1 Scout or +2 Incredible Scout for participating characters whose PF2e alliance is party. It skips any actor with a rolled combatant and any equal or stronger existing Scout effect. PF2e owns stacking and effect removal. Tracker initiative rolls also prepare Scout. Direct sheet rolls remain native; this module does not intercept them. Existing finite initiative totals, including zero, remain unchanged.
 
-Defend remains a manual handoff. Use native PF2e Raise a Shield when appropriate, or let your existing integration handle it. This module never toggles a shield, adds AC, or deletes effects. Automated opening-round Defend is deferred until its full live encounter behavior can be verified.
+Begin Encounter rolls missing initiative with native PF2e and `skipDialog`. A character with Avoid Notice selected uses a separate native Stealth initiative statistic without changing the saved default preference. Other exploration benefits remain owned by PF2e and your existing integrations.
 
-## Settings
+The start snapshot precedes initiative and encounter callbacks. Native `combatStart` dispatch runs once with its normal callback order, once-listener behavior, and mutable update data. The module waits for every returned callback promise before clearing or advancing round one. A callback error stops this module's cleanup and round advancement after other returned promises settle. Previously completed rolls or integration writes are not rolled back. Detached work that a callback does not return cannot be awaited. Other modules own their own dialogs.
 
-**Encounter cleanup** defaults to **Review**. Review opens the handoff at encounter start. **Off** disables start prompts and automatic cleanup, while manual controls remain available. **Guarded automatic** clears unchanged character selections only once every combatant has finite initiative and Avoid Notice is inactive. It retries when initiative changes. An initiative result of zero counts as rolled.
+After eligible cleanup, selected Defend uses native Raise a Shield only when a usable held shield exists and no canonical raised-shield effect exists. The canonical effect is normalized immediately before the first round to expire at the actor's first turn. Duplicate linked combatants use the earliest participating turn. Existing shields are never blindly toggled. Invalid shields produce a warning without stopping the encounter. Unrelated effects are preserved.
 
-**Enable pre-roll scouting preparation** defaults to enabled. Disable it to keep scouting entirely manual.
+## Recovery and settings
 
-When `pf2e-avoid-notice` is active, guarded automatic cleanup is suppressed and the handoff requests review. Its async encounter processing can read Defend after the combat-start hook has returned. No timer or round change proves that processing finished. Default Review also protects unknown integrations by requiring your confirmation.
+**Encounter cleanup** defaults to **Automatic**. **Review** retains the optional handoff prompt and manual controls. **Off** keeps the native start behavior. **Enable pre-roll scouting preparation** defaults to enabled.
 
-## Recovery and limits
+The combat tracker's **Exploration** button and Configure Settings' **Exploration handoff** menu provide optional manual Scout, clear, and restore controls. Manual clear requires confirmation that other automation has finished. Manual Scout retains explicit source and recipient selection.
 
-- Only the active GM writes documents. All module actions are serialized on that client because separate encounters can share an actor. Linked combatants share one actor entry; synthetic token actors keep their own UUID. Every linked combatant must roll before that actor can be cleared.
-- The encounter keeps an immutable snapshot of selections and labels. Late entrants add entries without replacing earlier entries. A clear writes an Actor receipt and the empty activity selection in the same update. An empty selection alone is never proof that the module cleared it.
-- Restore requires the matching receipt and an empty current selection. It restores only surviving action or feat IDs with the exploration trait, then removes the receipt in the same actor update. A separate encounter suppression flag prevents another cleanup after restore. Failed writes can be retried.
-- A receipt from an encounter that still exists blocks cleanup. Restore that earlier encounter before clearing this actor again. Ending or deleting the encounter removes its recovery snapshot. Its well-formed Actor receipt then expires and can be replaced in the same update as a new eligible clear. It cannot restore the deleted snapshot and does not require manual flag editing. Malformed recovery data remains untouched.
-- Foundry has no compare-and-swap guard on these document updates. A simultaneous player edit or active-GM handover can race a write already sent to the server. Fresh checks reduce this window but do not eliminate it. Avoid changing exploration selections while the GM clears or restores them.
-- The module does not change initiative statistics, rolled totals, conditions, spell effects, or visibility. It does not automate Search, Avoid Notice, or other activity benefits. Review those effects before clearing.
-- Opening a handoff before encounter start does not snapshot activities. Changes made before Begin Encounter remain eligible for the start snapshot. If another GM starts combat, the active GM captures through the broadcast update hook. Unknown integrations that clear selections before that fallback can affect what is captured.
+- Only the active GM writes saved PF2e documents. Snapshot, Scout, and recovery operations are serialized on that client. Concurrent Begin clicks for the same encounter share one pending start.
+- The Combat snapshot preserves activity IDs and labels. Linked combatants share one Actor entry; synthetic token actors keep their own UUID. NPC exploration selections are excluded.
+- Cleanup requires unchanged selections and finite initiative for every linked combatant. An Actor receipt and empty selection are written in the same update. An empty selection alone never proves ownership.
+- Restore requires a matching receipt and empty current selection. It restores surviving exploration action or feat IDs and deletes the receipt with Foundry 14 ForcedDeletion. A Combat suppression flag prevents another cleanup after restore.
+- Restore before ending or deleting the encounter. A well-formed receipt whose encounter was deleted expires and can be replaced by a later eligible clear. A receipt for another live encounter or malformed recovery data remains untouched.
+- A failed operation may already have committed writes. Receipts preserve recovery for completed clears. Retry after resolving the error.
+- Foundry has no compare-and-swap guard for these updates. A player edit or GM handover can race a write already sent to the server. Fresh checks reduce that window but cannot eliminate it.
+- Nonactive-GM callers, started encounters, Review, and Off use the wrapped native start. Automatic execution is pinned to Foundry 14.369 and PF2e 8.6.1 and refuses other versions.
 
 ## Verify in a disposable world
 
-The Node tests use document fixtures. These live checks remain required before campaign use.
-
-1. Load Foundry 14 with PF2e 8.6.1. Confirm the settings menu and tracker button open, and actor names with punctuation display as text.
-2. Assign Scout, Defend, and multiple exploration activities. Roll zero initiative for one character and leave another unrolled. Begin Encounter and verify the saved labels. Clear and restore. Verify the unrolled character and any manually edited selections remain unchanged.
-3. Add duplicate linked tokens and an unlinked synthetic token. Verify duplicates wait for every roll, while the synthetic token restores separately. Add a late entrant and verify the original snapshots persist.
-4. Prepare scouting before initiative for explicit allies only. Verify +1, then Incredible Scout +2 alongside an existing +1, on the native initiative breakdown. Confirm unrelated circumstance bonuses and penalties remain intact and do not block preparation. Confirm the canonical effect removes after the roll, equivalent or stronger Scout effects skip duplicates, and already rolled encounters refuse preparation. Verify opponents receive nothing unless explicitly checked.
-5. Enable Avoid Notice. Confirm automatic mode retains exploration selections, allows its normal Defend processing, and requires GM review. Resolve native shields manually when the integration is absent. Existing effects must remain intact.
-6. Start combat from a second, nonactive GM. Switch active GM, refresh, and verify recovery receipts remain usable. Restore after removing a combatant if its actor still exists. Test deleting an activity item before restore.
-7. Clear a character, end the encounter, select new exploration activities, and create a new encounter. Verify its eligible clear replaces the expired receipt and restores the new selections. With two live encounters sharing an actor, verify concurrent clears retain the first encounter's receipt and recovery.
+Node tests use source-shaped document and Hooks fixtures. Live verification must also check the actual Begin button, native Scout +1 and +2 roll modifiers, missing Avoid Notice Stealth rolls, and the absence of a module handoff dialog. Use equipped shields to check AC before and after the defender's first turn, including first, later, and tied initiative. Check an existing raised shield, delayed encounter readers, recovery without deprecation warnings, and changed selections. Preserve campaign actors and world time, and remove only test fixtures.
 
 ## Source grounding
 
-Reviewed installed Foundry client sources `client/documents/combat.mjs`, `client/applications/api/dialog.mjs`, and `client/helpers/client-settings.mjs`; installed PF2e `pf2e.mjs`; and Avoid Notice `esmodules/combat.js` and `esmodules/defender.js`. These files are not bundled.
+The implementation was checked against installed Foundry `client/documents/combat.mjs`, `client/helpers/hooks.mjs`, and document exports; PF2e `ActorInitiative`, `Encounter.rollInitiative`, Raise a Shield, and effect creation code; and Avoid Notice's encounter and Defend callbacks. Those sources are not bundled. The owned start method preserves the inspected six-line native lifecycle and adds the awaited callback boundary.
 
-Canonical effect identities are `Compendium.pf2e.other-effects.Item.EMqGwUi3VMhCjTlF` and `Compendium.pf2e.feat-effects.Item.la8rWwUtReElgTS6`. Local source inspection established the intended integration contract, not a live compatibility certification.
-
-Project references are [Foundry API documentation](https://foundryvtt.com/api/) and [PF2e system source](https://github.com/foundryvtt/pf2e). Check the installed versions when comparing upstream sources.
+Canonical effects are Scout `Compendium.pf2e.other-effects.Item.EMqGwUi3VMhCjTlF`, Incredible Scout `Compendium.pf2e.feat-effects.Item.la8rWwUtReElgTS6`, and Raise a Shield `Compendium.pf2e.equipment-effects.Item.2YgXoHvJfrDHucMr`. Source inspection and fixtures do not certify live integration behavior.

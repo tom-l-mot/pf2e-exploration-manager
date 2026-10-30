@@ -1,0 +1,158 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { ID, SCOUT, INCREDIBLE_SCOUT } from "../scripts/handoff.js";
+import { startCombat, dispatchCombatStart, SHIELD, trackerInitiative } from "../scripts/automatic.js";
+
+function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], incredible = false } = {}) {
+  const calls = [];
+  const effects = [];
+  const items = [
+    ...["scout", "defend", "avoid"].map(id => ({ id, type: "action", name: id, system: { slug: id === "avoid" ? "avoid-notice" : id, traits: { value: ["exploration"] } } })),
+    ...(incredible ? [{ type: "feat", system: { slug: "incredible-scout" } }] : [])
+  ];
+  items.get = id => items.find(i => i.id === id);
+  class Initiative {
+    constructor(actor, options) { this.actor = actor; this.options = options; this.tiebreakPriority = 2; }
+    async roll(options) {
+      calls.push(["stealth", this.options.statistic, options.skipDialog, options.updateTracker, this.actor.items.filter(i => i.type === "effect").map(i => i.flags?.core?.sourceId)]);
+      return { combatant: options.combatant, roll: { total: 14 } };
+    }
+  }
+  const actor = { uuid: "Actor.hero", name: "Hero", type: "character", alliance: "party", flags: {}, items,
+    system: { exploration: ids, initiative: { statistic: "perception" } }, heldShield: { isBroken: false, isDestroyed: false },
+    getFlag: (_id, key) => actor.flags[key],
+    async update(data) { calls.push(["clear"]); actor.system.exploration = data["system.exploration"]; actor.flags.clearReceipt = data[`flags.${ID}.clearReceipt`]; },
+    async createEmbeddedDocuments(_type, data) { items.push(...data); }
+  };
+  actor.initiative = new Initiative(actor, { statistic: "perception" });
+  const combatants = initiatives.map((initiative, index) => ({ id: `c${index}`, actor, initiative }));
+  const combat = { id: "test", uuid: "Combat.test", started: false, flags: {}, combatants,
+    get turns() { return [...combatants].sort((a,b) => b.initiative-a.initiative); },
+    getFlag: (_id, key) => combat.flags[key],
+    async setFlag(_id,key,data) { combat.flags[key] = structuredClone(data); },
+    async setInitiative(id,total,statistic) { combatants.find(c => c.id === id).initiative = total; calls.push(["initiative",id,total,statistic]); },
+    async rollInitiative(ids, options) { calls.push(["ordinary", ids, options]); for(const id of ids) combatants.find(c => c.id === id).initiative = 8; },
+    _playCombatSound(sound) { calls.push(["sound",sound]); },
+    async update(data) { calls.push(["round",structuredClone(data),[...actor.system.exploration]]); combat.started = true; return combat; }
+  };
+  globalThis.game = { user: { isActiveGM:true }, release: { generation:14,build:369 }, system: {id:"pf2e",version:"8.6.1"}, time: {worldTime:123}, combats: new Map([[combat.id,combat]]), modules: new Map(),
+    settings: { get: (module,key) => module===ID ? ({cleanup:"automatic",scout:true})[key] : false },
+    pf2e: {actions: { async raiseAShield() { calls.push(["raise"]); const effect = {type:"effect",sourceId:SHIELD, async update(data) { effects.push(data); }}; items.push(effect); } }}
+  };
+  globalThis.ui = {notifications:{warn: message => calls.push(["warn",message])}};
+  globalThis.foundry = {documents:{ActiveEffect:{registry:{async refresh(...args) { calls.push(["refresh",args[0]]); }}}}};
+  globalThis.fromUuid = async sourceId => ({ type:"effect", toObject: () => ({type:"effect",system:{slug:sourceId===INCREDIBLE_SCOUT?"effect-scout-incredible-scout":"effect-scout",rules:[]}}) });
+  const events = {combatStart:[]};
+  let next = 0;
+  const nativeErrors = [];
+  globalThis.Hooks = { events,
+    on(hook, fn, once=false) { const entry = {hook,fn,once,id:++next}; (events[hook]??=[]).push(entry); return entry; },
+    callAll(hook,...args) { calls.push(["hooks",args[0].id]); for(const entry of [...(events[hook]??[])]) { if(entry.once) events[hook].splice(events[hook].indexOf(entry),1); try { entry.fn(...args); } catch(error) { nativeErrors.push(error); } } }
+  };
+  return {actor,combat,calls,effects,nativeErrors};
+}
+const deferred = () => { let release; const promise = new Promise(resolve => {release=resolve;}); return {promise,release}; };
+
+test("Begin automatically prepares strongest Scout, preserves zero, rolls only missing with Stealth, clears then normalizes Defend", async () => {
+  const {actor,combat,calls,effects} = fixture({initiatives:[0,null],incredible:true});
+  // A linked actor with a rolled combatant must not gain Scout after the roll.
+  const result = await startCombat.call(combat, () => assert.fail("native fallback"));
+  assert.equal(result,combat);
+  assert.deepEqual(combat.combatants.map(c=>c.initiative),[0,14]);
+  assert.deepEqual(calls.find(c=>c[0]==="stealth"),["stealth","stealth",true,false,[]]);
+  assert.equal(actor.system.initiative.statistic,"perception");
+  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:"Combat.test",clearedIds:["scout","defend","avoid"]});
+  assert.deepEqual(calls.find(c=>c[0]==="round"),["round",{round:1,turn:0},[]]);
+  assert.deepEqual(effects,[{"system.duration.value":0,"system.duration.unit":"rounds","system.duration.expiry":"turn-start","system.start.value":123,"system.start.initiative":14}]);
+  assert.ok(calls.findIndex(c=>c[0]==="clear") < calls.findIndex(c=>c[0]==="raise"));
+});
+
+test("Scout prepares unrolled allies before native initiative and respects stronger existing effects and opponents", async () => {
+  const {actor,combat,calls} = fixture({ids:["scout","avoid"],incredible:true});
+  await startCombat.call(combat,()=>assert.fail());
+  assert.deepEqual(calls.find(c=>c[0]==="stealth").at(-1),[INCREDIBLE_SCOUT]);
+  const next=fixture({ids:["scout"]});
+  next.actor.items.push({type:"effect",sourceId:INCREDIBLE_SCOUT,system:{slug:"effect-scout-incredible-scout"}});
+  await trackerInitiative.call(next.combat,async()=>"rolled");
+  assert.equal(next.actor.items.filter(i=>i.type==="effect").length,1);
+  next.actor.alliance="opposition";
+  next.actor.items.pop();
+  assert.equal(await trackerInitiative.call(next.combat,async()=>"rolled"),"rolled");
+  assert.equal(next.actor.items.filter(i=>i.type==="effect").length,0);
+});
+
+test("native Hooks ignores promises but Begin waits for late readers, dispatches once, restores identity and deduplicates starts", async () => {
+  const {actor,combat,calls} = fixture({ids:["defend"],initiatives:[0]});
+  const gate=deferred(), entered=deferred();
+  const order=[];
+  const original=async(c,data)=>{order.push("reader"); data.turn=2; entered.release(); await gate.promise; order.push([...actor.system.exploration]);};
+  const entry=Hooks.on("combatStart",original,true);
+  Hooks.on("combatStart",()=>order.push("second"));
+  const first=startCombat.call(combat,()=>assert.fail());
+  const duplicate=startCombat.call(combat,()=>assert.fail());
+  assert.equal(first,duplicate);
+  await entered.promise;
+  assert.deepEqual(actor.system.exploration,["defend"]);
+  assert.equal(combat.started,false);
+  assert.equal(entry.fn,original);
+  assert.equal(Hooks.events.combatStart.length,1);
+  gate.release();
+  await first;
+  assert.deepEqual(order,["reader","second",["defend"]]);
+  assert.equal(calls.filter(c=>c[0]==="hooks").length,1);
+  assert.deepEqual(calls.find(c=>c[0]==="round"),["round",{round:1,turn:2},[]]);
+});
+
+for(const failure of ["sync","async"]) test(`${failure} callback failure settles other readers before rejecting and preserves selections and round`,async()=>{
+  const {actor,combat,nativeErrors}=fixture({initiatives:[0],ids:["scout"]});
+  const gate=deferred(),entered=deferred();let late;
+  Hooks.on("combatStart",()=>{if(failure==="sync")throw Error("reader failed");return Promise.reject(Error("reader failed"));});
+  Hooks.on("combatStart",async()=>{entered.release();await gate.promise;late=[...actor.system.exploration];});
+  const pending=startCombat.call(combat,()=>assert.fail());
+  const rejected=assert.rejects(pending,/Encounter automation failed/);
+  await entered.promise;
+  assert.equal(combat.started,false);
+  gate.release();await rejected;
+  assert.deepEqual(late,["scout"]);
+  assert.deepEqual(actor.system.exploration,["scout"]);
+  assert.equal(actor.flags.clearReceipt,undefined);
+  assert.equal(nativeErrors.length,failure==="sync"?1:0);
+});
+
+test("collector preserves native return and receiver, ignores another combat, and does not overwrite replacement functions",async()=>{
+  const {combat}=fixture();const other={id:"other"};let receiver;const returns=[];
+  const original=function(c){receiver=this;if(c===combat){Hooks.callAll("combatStart",other);return 17;}return 23;};
+  const entry=Hooks.on("combatStart",original);
+  const observer=Hooks.on("combatStart",()=>{});
+  const replacement=()=>{};
+  observer.fn=()=>{observer.fn=replacement;returns.push(entry.fn(other));};
+  await dispatchCombatStart(combat,{});
+  assert.equal(entry.fn,original);assert.equal(observer.fn,replacement);assert.equal(receiver,entry);assert.deepEqual(returns,[23]);
+});
+
+test("native fallbacks and ownership conflicts preserve documents",async()=>{
+  const {combat,actor}=fixture();game.user.isActiveGM=false;
+  assert.equal(startCombat.call(combat,()=>"native"),"native");
+  game.user.isActiveGM=true;game.modules.set("pf2e-avoid-notice",{active:true});game.settings.get=(module,key)=>module===ID?"automatic":true;
+  await assert.rejects(startCombat.call(combat,()=>assert.fail()),/raiseShields/);
+  assert.deepEqual(actor.system.exploration,["scout","defend","avoid"]);assert.deepEqual(combat.flags,{});
+});
+
+test("existing raised shield is normalized without toggling; invalid shield warns; changed selections and NPCs are retained",async()=>{
+  const {actor,combat,calls,effects}=fixture({initiatives:[2],ids:["defend"]});
+  actor.items.push({type:"effect",sourceId:SHIELD,async update(data){effects.push(data);}});
+  combat.combatants.push({id:"npc",initiative:null,actor:{type:"npc"}});
+  Hooks.on("combatStart",()=>{actor.system.exploration=["scout"];});
+  await startCombat.call(combat,()=>assert.fail());
+  assert.deepEqual(actor.system.exploration,["scout"]);assert.equal(calls.some(c=>c[0]==="raise"),false);assert.equal(effects[0]["system.duration.value"],0);
+  assert.equal(combat.combatants[1].actor.type,"npc");
+  const next=fixture({initiatives:[1],ids:["defend"]});next.actor.heldShield.isBroken=true;
+  await startCombat.call(next.combat,()=>assert.fail());
+  assert.equal(next.calls.find(c=>c[0]==="warn")[1],"Hero cannot Defend without a usable held shield.");
+});
+
+test("native round update failure propagates with recoverable receipt",async()=>{
+  const {actor,combat}=fixture({initiatives:[0],ids:["scout"]});combat.update=async()=>{throw Error("disk failed");};
+  await assert.rejects(startCombat.call(combat,()=>assert.fail()),/disk failed/);
+  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:combat.uuid,clearedIds:["scout"]});assert.equal(combat.started,false);
+});

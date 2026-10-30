@@ -1,4 +1,5 @@
-import { ID, participants, selection, snapshot, avoidNotice, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt } from "./handoff.js";
+import { registerAutomatic } from "./automatic.js";
+import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const reportError = error => { console.error(ID, error); ui.notifications.error(error.message); };
@@ -16,10 +17,10 @@ export function reviewContent(combat) {
     return `<tr><th scope="row">${escapeHTML(actor.name)}</th><td>${escapeHTML(current.join(", ") || "None")}</td><td>${escapeHTML(entry ? entry.labels.join(", ") || "None" : "Not captured")}</td><td>${escapeHTML(status)}<br>${escapeHTML(recovery)}</td></tr>`;
   }).join("");
   return `<p>Cleanup mode: ${escapeHTML(game.settings.get(ID, "cleanup"))}. Recovery is stored with this encounter. Restore before ending or deleting it. An expired receipt can be replaced by the next eligible clear.</p>
-    <p>${avoidNotice() ? "Avoid Notice is active. Review is required. Wait for its encounter processing before clearing." : "Confirm all encounter automation has finished before clearing. Unknown integrations may still read activities."}</p>
+    <p>Automatic mode waits for returned encounter callbacks before clearing eligible selections.</p>
     <table><thead><tr><th>Character</th><th>Current activities</th><th>Saved activities</th><th>Initiative and recovery</th></tr></thead><tbody>${rows}</tbody></table>
-    <p>Defend requires manual resolution. Use PF2e Raise a Shield when appropriate, or let Avoid Notice handle it. This module never raises or removes shields.</p>
-    <p>Scout must be prepared before any initiative rolls. Select recipients explicitly, including the scout if intended. Existing effects and rolled initiative are preserved.</p>`;
+    <p>Automatic Begin Encounter resolves selected Defend with a usable held shield until the character's first turn.</p>
+    <p>Automatic Begin Encounter and tracker rolls prepare Scout for allied participating characters. Already rolled initiative is preserved. Manual preparation remains available for recovery.</p>`;
 }
 
 async function scoutDialog(combat) {
@@ -60,30 +61,23 @@ export function registerSettings() {
     constructor() { super(configuration(game.combat)); }
   }
   game.settings.registerMenu(ID, "handoff", { name: "Exploration handoff", label: "Open handoff", hint: "Review the selected encounter, prepare Scout, clear, or restore activities.", icon: "fas fa-person-hiking", type: HandoffMenu, restricted: true });
-  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Review is recommended. Guarded automatic is blocked by Avoid Notice and unrolled participants. Off disables encounter prompts.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Guarded automatic" }, default: "review" });
-  game.settings.register(ID, "scout", { name: "Enable pre-roll scouting preparation", hint: "Adds canonical PF2e scouting effects to explicitly selected participants before any initiative rolls.", scope: "world", config: true, type: Boolean, default: true });
+  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Automatic Begin Encounter prepares Scout, rolls missing initiative, waits for encounter callbacks, clears selections, and resolves Defend.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Automatic" }, default: "automatic" });
+  game.settings.register(ID, "scout", { name: "Enable pre-roll scouting preparation", hint: "Prepares canonical PF2e Scout effects for allied participants before Begin Encounter or tracker initiative rolls.", scope: "world", config: true, type: Boolean, default: true });
 }
 
 export async function encounterChanged(combat, { prompt = false } = {}) {
-  if (!game.user.isActiveGM || !combat.started) return;
+  if (!game.user.isActiveGM || !combat.started || game.settings.get(ID, "cleanup") !== "review") return;
   await capture(combat);
   if (!game.user.isActiveGM) return;
   const mode = game.settings.get(ID, "cleanup");
-  if (mode === "automatic") {
-    await clearEligible(combat, { automatic: true });
-    if (prompt && avoidNotice()) await openHandoff(combat);
-  } else if (mode === "review" && prompt) await openHandoff(combat);
+  if (mode === "review" && prompt) await openHandoff(combat);
 }
 
 Hooks.once("init", registerSettings);
-Hooks.on("combatStart", combat => {
-  if (game.user.isActiveGM) void capture(combat).catch(reportError);
-});
+Hooks.once("ready", registerAutomatic);
 Hooks.on("updateCombat", (combat, changes) => {
   void encounterChanged(combat, { prompt: changes.round === 1 && changes.turn === 0 }).catch(reportError);
 });
-Hooks.on("updateCombatant", combatant => { if (combatant.parent) void encounterChanged(combatant.parent).catch(reportError); });
-Hooks.on("createCombatant", combatant => { if (combatant.parent) void encounterChanged(combatant.parent).catch(reportError); });
 Hooks.on("renderCombatTracker", (_app, element) => {
   if (!game.user.isActiveGM || element.querySelector(`[data-${ID}]`)) return;
   const header = element.querySelector(".combat-tracker-header");

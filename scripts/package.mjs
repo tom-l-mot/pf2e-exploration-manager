@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const { id, version } = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
-const files = ["module.json", "README.md", "scripts/main.js", "scripts/handoff.js"];
+const files = ["module.json", "README.md", "scripts/main.js", "scripts/handoff.js", "scripts/automatic.js"];
 const build = join(root, "build");
 const archive = join(build, `${id}-${version}.zip`);
 const entries = files.map((file) => `${id}/${file}`);

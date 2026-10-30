@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ID, SCOUT, INCREDIBLE_SCOUT, capture, clearEligible, restoreEligible, prepareScouting, snapshot, participants } from "../scripts/handoff.js";
 
+class ForcedDeletion {}
+globalThis.foundry = { data: { operators: { ForcedDeletion } } };
 const hooks = new Map();
 globalThis.Hooks = { once: (name, fn) => hooks.set(name, fn), on: (name, fn) => hooks.set(name, fn) };
 const { reviewContent, registerSettings, encounterChanged } = await import("../scripts/main.js");
@@ -15,8 +17,8 @@ function fixture({ ids = ["scout"], initiative = 0, uuid = "Actor.hero" } = {}) 
       if (actor.beforeWrite) await actor.beforeWrite(data);
       actor.writes.push(structuredClone(data));
       actor.system.exploration = [...data["system.exploration"]];
-      if (data[`flags.${ID}.clearReceipt`]) actor.flags.clearReceipt = structuredClone(data[`flags.${ID}.clearReceipt`]);
-      if (`flags.${ID}.-=clearReceipt` in data) delete actor.flags.clearReceipt;
+      if (data[`flags.${ID}.clearReceipt`] instanceof foundry.data.operators.ForcedDeletion) delete actor.flags.clearReceipt;
+      else if (data[`flags.${ID}.clearReceipt`]) actor.flags.clearReceipt = structuredClone(data[`flags.${ID}.clearReceipt`]);
       if (actor.afterWrite) await actor.afterWrite(data);
     },
     async createEmbeddedDocuments(_type, data) { actor.items.push(...data); }
@@ -44,7 +46,7 @@ test("clear stores receipt in the same write, restores valid activities, and is 
   await restoreEligible(combat);
   assert.deepEqual(actor.system.exploration, ["scout"]);
   assert.equal(actor.flags.clearReceipt, undefined);
-  assert.equal(actor.writes[1][`flags.${ID}.-=clearReceipt`], null);
+  assert.deepEqual(actor.writes[1][`flags.${ID}.clearReceipt`], {});
   await restoreEligible(combat);
   assert.equal(actor.writes.length, 2);
   await clearEligible(combat, { automatic: true });
@@ -345,7 +347,7 @@ test("Scout rechecks initiative and authority after loading canonical document",
   assert.equal(actor.items.length, 2);
 });
 
-test("native settings default to review and escape names and activity labels", () => {
+test("native settings default to automatic and escape names and activity labels", () => {
   const { actor, combat } = fixture();
   actor.name = '<img src=x onerror="bad()">';
   actor.items[0].name = "<script>bad()</script>";
@@ -354,11 +356,11 @@ test("native settings default to review and escape names and activity labels", (
   assert.ok(html.includes("&lt;script&gt;"));
   assert.ok(!html.includes("<script>"));
   const registered = new Map();
-  globalThis.foundry = { applications: { api: { DialogV2: class {} } } };
+  globalThis.foundry = { data: { operators: { ForcedDeletion } }, applications: { api: { DialogV2: class {} } } };
   game.settings.registerMenu = (_module, key, data) => registered.set(key, data);
   game.settings.register = (_module, key, data) => registered.set(key, data);
   registerSettings();
-  assert.equal(registered.get("cleanup").default, "review");
+  assert.equal(registered.get("cleanup").default, "automatic");
   assert.equal(registered.get("handoff").restricted, true);
   assert.equal(registered.get("scout").default, true);
   assert.equal(hooks.has("updateCombat"), true);

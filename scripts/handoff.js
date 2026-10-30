@@ -24,7 +24,7 @@ export function participants(combat) {
   return actors;
 }
 
-function authority(combat) {
+export function authority(combat) {
   if (!game.user.isActiveGM || game.system.id !== "pf2e" || game.combats.get(combat.id) !== combat) {
     throw new Error("Only the active GM can change a saved PF2e encounter.");
   }
@@ -66,11 +66,19 @@ export function capture(combat) {
 }
 
 export function clearEligible(combat, { automatic = false, reviewed = false } = {}) {
+  return clearSelections(combat, { automatic, reviewed });
+}
+
+export function clearBeforeStart(combat) {
+  return clearSelections(combat, { automatic: true, beforeStart: true });
+}
+
+function clearSelections(combat, { automatic = false, reviewed = false, beforeStart = false }) {
   const entries = captureEntries(combat);
   return queued(combat, async () => {
     const result = { changed: [], skipped: [] };
-    if (!combat.started || (!automatic && !reviewed)) return result;
-    if (automatic && (avoidNotice() || combat.combatants.some(c => !Number.isFinite(c.initiative)))) return result;
+    if ((!combat.started && !beforeStart) || (!automatic && !reviewed)) return result;
+    if (automatic && ((!beforeStart && avoidNotice()) || combat.combatants.some(c => !Number.isFinite(c.initiative)))) return result;
     await saveCapture(combat, entries);
     authority(combat);
     for (const entry of snapshot(combat).entries) {
@@ -115,7 +123,7 @@ export function restoreEligible(combat) {
         const item = actor.items.get(id);
         return ["action", "feat"].includes(item?.type) && item.system.traits?.value?.includes("exploration");
       });
-      await actor.update({ "system.exploration": valid, [`flags.${ID}.-=clearReceipt`]: null });
+      await actor.update({ "system.exploration": valid, [`flags.${ID}.clearReceipt`]: new foundry.data.operators.ForcedDeletion() });
       authority(combat);
       result.changed.push(actor.name);
     }
@@ -131,6 +139,31 @@ function hasScoutingEffect(actor, incredible) {
     const strength = source === INCREDIBLE_SCOUT || item.system.slug === "effect-scout-incredible-scout" ? 2
       : source === SCOUT || item.system.slug === "effect-scout" ? 1 : 0;
     return strength >= value || item.system.rules?.some(rule => rule.key === "FlatModifier" && rule.slug === "scouting-bonus" && rule.type === "circumstance" && [rule.selector].flat().includes("initiative") && rule.value >= value);
+  });
+}
+
+export function prepareAutomaticScouting(combat) {
+  return queued(combat, async () => {
+    if (!game.settings.get(ID, "scout") || combat.started) return;
+    const party = [...participants(combat).values()];
+    const allies = party.filter(({ actor }) => actor.alliance === "party");
+    const scouts = allies.filter(({ actor }) => selection(actor).some(id => actor.items.get(id)?.system.slug === "scout"));
+    if (!scouts.length) return;
+    const incredible = scouts.some(({ actor }) => actor.items.some(item => item.type === "feat" && item.system.slug === "incredible-scout"));
+    const sourceId = incredible ? INCREDIBLE_SCOUT : SCOUT;
+    const effect = await fromUuid(sourceId);
+    authority(combat);
+    if (!effect || effect.type !== "effect") throw new Error("The canonical PF2e scouting effect could not be loaded.");
+    for (const { actor, combatants } of allies) {
+      authority(combat);
+      if (combat.started) throw new Error("The encounter started during Scout preparation.");
+      if (combatants.some(c => Number.isFinite(c.initiative)) || hasScoutingEffect(actor, incredible)) continue;
+      const data = effect.toObject();
+      delete data._id;
+      data.flags ??= {};
+      data.flags.core = { ...data.flags.core, sourceId };
+      await actor.createEmbeddedDocuments("Item", [data]);
+    }
   });
 }
 
