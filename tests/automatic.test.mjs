@@ -55,7 +55,6 @@ const deferred = () => { let release; const promise = new Promise(resolve => {re
 
 test("Begin automatically prepares strongest Scout, preserves zero, rolls only missing with Stealth, clears then normalizes Defend", async () => {
   const {actor,combat,calls,effects} = fixture({initiatives:[0,null],incredible:true});
-  // A linked actor with a rolled combatant must not gain Scout after the roll.
   const result = await startCombat.call(combat, () => assert.fail("native fallback"));
   assert.equal(result,combat);
   assert.deepEqual(combat.combatants.map(c=>c.initiative),[0,14]);
