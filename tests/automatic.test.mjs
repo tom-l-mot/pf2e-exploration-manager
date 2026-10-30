@@ -67,6 +67,34 @@ test("Begin automatically prepares strongest Scout, preserves zero, rolls only m
   assert.ok(calls.findIndex(c=>c[0]==="clear") < calls.findIndex(c=>c[0]==="raise"));
 });
 
+test("ordinary initiative assigned while Stealth is pending is preserved", async () => {
+  const {actor,combat,calls} = fixture({initiatives:[null,null,null],ids:["avoid"]});
+  combat.combatants[0].actor = {type:"npc"};
+  combat.combatants[2].actor = {type:"npc"};
+  const gate=deferred(),entered=deferred();
+  actor.initiative.constructor.prototype.roll=async()=>{entered.release();await gate.promise;return {roll:{total:14}};};
+  const pending=startCombat.call(combat,()=>assert.fail("unexpected fallback"));
+  await entered.promise;
+  combat.combatants[0].initiative=99;
+  gate.release();
+  await pending;
+  assert.deepEqual(combat.combatants.map(c=>c.initiative),[99,14,8]);
+  assert.deepEqual(calls.find(c=>c[0]==="ordinary"),["ordinary",["c2"],{skipDialog:true}]);
+});
+
+for(const initiative of [0,99]) test(`Stealth initiative assigned to ${initiative} while its roll is pending is preserved`, async () => {
+  const {actor,combat,calls} = fixture({ids:["avoid"]});
+  const gate=deferred(),entered=deferred();
+  actor.initiative.constructor.prototype.roll=async()=>{entered.release();await gate.promise;return {roll:{total:14}};};
+  const pending=startCombat.call(combat,()=>assert.fail("unexpected fallback"));
+  await entered.promise;
+  combat.combatants[0].initiative=initiative;
+  gate.release();
+  await pending;
+  assert.equal(combat.combatants[0].initiative,initiative);
+  assert.equal(calls.some(c=>c[0]==="initiative"),false);
+});
+
 test("Scout prepares unrolled allies before native initiative and respects stronger existing effects and opponents", async () => {
   const {actor,combat,calls} = fixture({ids:["scout","avoid"],incredible:true});
   await startCombat.call(combat,()=>assert.fail());
