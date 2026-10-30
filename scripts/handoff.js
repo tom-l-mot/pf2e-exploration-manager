@@ -1,12 +1,17 @@
 export const ID = "pf2e-exploration-manager";
 export const SCOUT = "Compendium.pf2e.other-effects.Item.EMqGwUi3VMhCjTlF";
 export const INCREDIBLE_SCOUT = "Compendium.pf2e.feat-effects.Item.la8rWwUtReElgTS6";
-const queues = new Map();
+let queue = Promise.resolve();
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export const selection = actor => [...actor.system.exploration];
 export const avoidNotice = () => !!game.modules.get("pf2e-avoid-notice")?.active;
 export const snapshot = combat => combat.getFlag(ID, "handoff");
 const receipt = actor => actor.getFlag(ID, "clearReceipt");
+
+export function expiredReceipt(owned) {
+  const id = /^Combat\.([^.]+)$/.exec(owned?.combatUuid)?.[1];
+  return !!id && Array.isArray(owned.clearedIds) && owned.clearedIds.length > 0 && owned.clearedIds.every(id => typeof id === "string") && !game.combats.get(id);
+}
 
 export function participants(combat) {
   const actors = new Map();
@@ -29,10 +34,8 @@ function authority(combat) {
 }
 
 function queued(combat, operation) {
-  const previous = queues.get(combat.uuid) ?? Promise.resolve();
-  const next = previous.catch(() => {}).then(() => { authority(combat); return operation(); });
-  queues.set(combat.uuid, next);
-  void next.finally(() => { if (queues.get(combat.uuid) === next) queues.delete(combat.uuid); }).catch(() => {});
+  const next = queue.then(() => { authority(combat); return operation(); });
+  queue = next.catch(() => {});
   return next;
 }
 
@@ -74,7 +77,8 @@ export function clearEligible(combat, { automatic = false, reviewed = false } = 
       const current = participants(combat).get(entry.actorUuid);
       if (!current) continue;
       const { actor, combatants } = current;
-      if (!entry.activityIds.length || receipt(actor) || combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid) || !equal(selection(actor), entry.activityIds) || combatants.some(c => !Number.isFinite(c.initiative))) {
+      const owned = receipt(actor);
+      if (!entry.activityIds.length || (owned && !expiredReceipt(owned)) || combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid) || !equal(selection(actor), entry.activityIds) || combatants.some(c => !Number.isFinite(c.initiative))) {
         result.skipped.push(actor.name);
         continue;
       }
@@ -119,12 +123,15 @@ export function restoreEligible(combat) {
   });
 }
 
-function hasScoutingEffect(actor) {
-  return actor.items.some(item => item.type === "effect" && (
-    [SCOUT, INCREDIBLE_SCOUT].includes(item.sourceId ?? item.flags?.core?.sourceId) ||
-    ["effect-scouting", "effect-incredible-scout"].includes(item.system.slug) ||
-    item.system.rules?.some(rule => rule.key === "FlatModifier" && rule.type === "circumstance" && [rule.selector].flat().some(s => ["initiative", "all"].includes(s)))
-  ));
+function hasScoutingEffect(actor, incredible) {
+  const value = incredible ? 2 : 1;
+  return actor.items.some(item => {
+    if (item.type !== "effect") return false;
+    const source = item.sourceId ?? item.flags?.core?.sourceId;
+    const strength = source === INCREDIBLE_SCOUT || item.system.slug === "effect-scout-incredible-scout" ? 2
+      : source === SCOUT || item.system.slug === "effect-scout" ? 1 : 0;
+    return strength >= value || item.system.rules?.some(rule => rule.key === "FlatModifier" && rule.slug === "scouting-bonus" && rule.type === "circumstance" && [rule.selector].flat().includes("initiative") && rule.value >= value);
+  });
 }
 
 export function prepareScouting(combat, sourceUuid, recipientUuids) {
@@ -147,7 +154,7 @@ export function prepareScouting(combat, sourceUuid, recipientUuids) {
       authority(combat);
       if (combat.started || combat.combatants.some(c => Number.isFinite(c.initiative))) throw new Error("Initiative changed. Scouting preparation stopped.");
       if (!actor || !current.has(sourceUuid) || !selection(source).some(id => source.items.get(id)?.system.slug === "scout")) throw new Error("Participants or Scout selection changed. Reopen the handoff.");
-      if (hasScoutingEffect(actor)) { result.skipped.push(actor.name); continue; }
+      if (hasScoutingEffect(actor, incredible)) { result.skipped.push(actor.name); continue; }
       const data = effect.toObject();
       delete data._id;
       data.flags ??= {};

@@ -106,6 +106,10 @@ test("empty selection is never inferred to be owned, and pending receipt blocks 
   assert.equal(actor.writes.length, 0);
   await restoreEligible(combat);
   assert.equal(actor.writes.length, 0);
+  actor.flags.clearReceipt = { combatUuid: combat.uuid, clearedIds: ["scout"] };
+  await clearEligible(combat, { reviewed: true });
+  assert.equal(actor.writes.length, 0);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
 });
 
 test("a deleted encounter receipt is replaced atomically on the next eligible clear", async () => {
@@ -125,8 +129,11 @@ test("expired receipts do not bypass eligibility or overwrite malformed recovery
   assert.deepEqual(actor.system.exploration, ["scout"]);
   assert.deepEqual(actor.flags.clearReceipt, expired);
   combat.combatants[0].initiative = 0;
-  actor.flags.clearReceipt = { combatUuid: "unknown", clearedIds: ["defend"] };
-  await clearEligible(combat, { reviewed: true });
+  for (const owned of [{ combatUuid: "unknown", clearedIds: ["defend"] }, { combatUuid: "Combat.deleted", clearedIds: [1] }]) {
+    actor.flags.clearReceipt = owned;
+    await clearEligible(combat, { reviewed: true });
+    assert.deepEqual(actor.flags.clearReceipt, owned);
+  }
   assert.equal(actor.writes.length, 0);
   assert.deepEqual(actor.system.exploration, ["scout"]);
 });
@@ -355,4 +362,14 @@ test("native settings default to review and escape names and activity labels", (
   assert.equal(registered.get("handoff").restricted, true);
   assert.equal(registered.get("scout").default, true);
   assert.equal(hooks.has("updateCombat"), true);
+});
+
+test("handoff explains the lifetime of recovery and marks deleted-encounter receipts", () => {
+  const { actor, combat } = fixture();
+  actor.flags.clearReceipt = { combatUuid: "Combat.deleted", clearedIds: ["scout"] };
+  const html = reviewContent(combat);
+  assert.ok(html.includes("Restore before ending or deleting it."));
+  assert.ok(html.includes("Earlier encounter deleted; receipt expires on next eligible clear"));
+  game.combats.set("deleted", { uuid: "Combat.deleted" });
+  assert.ok(reviewContent(combat).includes("Recovery belongs to another encounter"));
 });

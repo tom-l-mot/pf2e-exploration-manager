@@ -1,4 +1,4 @@
-import { ID, participants, selection, snapshot, avoidNotice, capture, clearEligible, restoreEligible, prepareScouting } from "./handoff.js";
+import { ID, participants, selection, snapshot, avoidNotice, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const reportError = error => { console.error(ID, error); ui.notifications.error(error.message); };
@@ -12,10 +12,10 @@ export function reviewContent(combat) {
     const current = selection(actor).map(id => actor.items.get(id)?.name ?? `Missing activity (${id})`);
     const status = combatants.every(c => Number.isFinite(c.initiative)) ? "Rolled" : "Waiting for initiative";
     const owned = actor.getFlag(ID, "clearReceipt");
-    const recovery = owned ? (owned.combatUuid === combat.uuid ? "Clear receipt saved" : "Recovery belongs to another encounter") : "";
+    const recovery = owned ? (expiredReceipt(owned) ? "Earlier encounter deleted; receipt expires on next eligible clear" : owned.combatUuid === combat.uuid ? "Clear receipt saved" : "Recovery belongs to another encounter") : "";
     return `<tr><th scope="row">${escapeHTML(actor.name)}</th><td>${escapeHTML(current.join(", ") || "None")}</td><td>${escapeHTML(entry ? entry.labels.join(", ") || "None" : "Not captured")}</td><td>${escapeHTML(status)}<br>${escapeHTML(recovery)}</td></tr>`;
   }).join("");
-  return `<p>Cleanup mode: ${escapeHTML(game.settings.get(ID, "cleanup"))}. Recovery is stored with this encounter. Restore before deleting it.</p>
+  return `<p>Cleanup mode: ${escapeHTML(game.settings.get(ID, "cleanup"))}. Recovery is stored with this encounter. Restore before ending or deleting it. An expired receipt can be replaced by the next eligible clear.</p>
     <p>${avoidNotice() ? "Avoid Notice is active. Review is required. Wait for its encounter processing before clearing." : "Confirm all encounter automation has finished before clearing. Unknown integrations may still read activities."}</p>
     <table><thead><tr><th>Character</th><th>Current activities</th><th>Saved activities</th><th>Initiative and recovery</th></tr></thead><tbody>${rows}</tbody></table>
     <p>Defend requires manual resolution. Use PF2e Raise a Shield when appropriate, or let Avoid Notice handle it. This module never raises or removes shields.</p>
