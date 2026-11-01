@@ -680,3 +680,69 @@ test("a failed automatic Stealth roll can be retried without clearing exploratio
   await automatic.addedCombatant(combat.combatants[0]);
   assert.equal(combat.combatants[0].initiative,16);
 });
+
+test("reselecting the same activity clears on its next tracker roll after an initiative reset", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  const roll = async () => { combat.combatants[0].initiative = 8; return combat; };
+  await trackerInitiative.call(combat, roll, ["c0"]);
+  combat.combatants[0].initiative = null;
+  actor.system.exploration = ["scout"];
+  await trackerInitiative.call(combat, roll, ["c0"]);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout"]);
+});
+
+test("a fresh selection in another encounter replaces a live previous encounter receipt", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  const roll = async () => { combat.combatants[0].initiative = 8; return combat; };
+  await trackerInitiative.call(combat, roll, ["c0"]);
+  const old = { id: "previous", uuid: combat.uuid };
+  game.combats.set(old.id, old);
+  game.combats.delete(combat.id);
+  combat.id = "next";
+  combat.uuid = "Combat.next";
+  combat.flags = {};
+  actor.flags.clearReceipt.combatUuid = "Combat.previous";
+  game.combats.set(combat.id, combat);
+  actor.system.exploration = ["defend"];
+  await trackerInitiative.call(combat, roll, ["c0"]);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.equal(actor.flags.clearReceipt.combatUuid, combat.uuid);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
+});
+
+test("a different actor's roll cannot consume a newly selected activity", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"], initiatives: [8] });
+  await handoff.initiativeRecorded(combat);
+  actor.system.exploration = ["defend"];
+  const other = { id: "other", actor: { type: "npc" }, initiative: null, parent: combat };
+  combat.combatants.push(other);
+  await trackerInitiative.call(combat, async () => { other.initiative = 10; return combat; }, ["other"]);
+  assert.deepEqual(actor.system.exploration, ["defend"]);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout"]);
+});
+
+test("selection edits during an awaited tracker roll survive its cleanup", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  const gate = deferred(), entered = deferred();
+  const pending = trackerInitiative.call(combat, async () => { entered.release(); await gate.promise; combat.combatants[0].initiative = 8; }, ["c0"]);
+  await entered.promise;
+  actor.system.exploration = ["defend"];
+  gate.release();
+  await pending;
+  assert.deepEqual(actor.system.exploration, ["defend"]);
+  assert.equal(actor.flags.clearReceipt, undefined);
+});
+
+for (const rolled of [false, true]) test(`Begin consumes a fresh selection with a stale receipt when initiative is ${rolled ? "already rolled" : "missing"}`, async () => {
+  const { actor, combat } = fixture({ ids: ["scout"], initiatives: [8] });
+  await handoff.initiativeRecorded(combat);
+  actor.system.exploration = ["defend"];
+  combat.combatants[0].initiative = rolled ? 8 : null;
+  const seen = [];
+  Hooks.on("combatStart", () => { seen.push([...actor.system.exploration]); });
+  await startCombat.call(combat, () => assert.fail());
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
+  assert.deepEqual(seen, [["defend"]]);
+});

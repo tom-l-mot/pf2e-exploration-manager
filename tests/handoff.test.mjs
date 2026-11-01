@@ -397,3 +397,32 @@ test("handoff explains the lifetime of recovery and marks deleted-encounter rece
   game.combats.set("deleted", { uuid: "Combat.deleted" });
   assert.ok(reviewContent(combat).includes("Recovery belongs to another encounter"));
 });
+
+test("explicit restore clears again at the next actor initiative boundary", async () => {
+  const { actor, combat, settings } = fixture();
+  settings.set("cleanup", "automatic");
+  await initiativeRecorded(combat);
+  await restoreEligible(combat);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+  const { recordedInitiative } = await import("../scripts/automatic.js");
+  await recordedInitiative.call(combat, async () => { combat.combatants[0].initiative = 12; }, "c1", 12);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout"]);
+  assert.deepEqual(combat.getFlag(ID, "restoredActorUuids"), []);
+});
+
+test("player initiative update is cleaned by the active GM hook even with a live old receipt", async () => {
+  const { actor, combat, settings } = fixture();
+  settings.set("cleanup", "automatic");
+  await initiativeRecorded(combat);
+  actor.system.exploration = ["defend"];
+  game.user.isActiveGM = false;
+  const { recordedInitiative } = await import("../scripts/automatic.js");
+  await recordedInitiative.call(combat, async () => { combat.combatants[0].initiative = 12; }, "c1", 12);
+  assert.deepEqual(actor.system.exploration, ["defend"]);
+  game.user.isActiveGM = true;
+  hooks.get("updateCombatant")(combat.combatants[0], { initiative: 12 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
+});
