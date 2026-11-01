@@ -508,6 +508,11 @@ test("the active GM repairs a player's Perception overwrite before Begin without
   assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout", "avoid"]);
   assert.equal(actor.system.initiative.statistic, "perception");
   assert.equal(combat.started, false);
+  await nativeSet("c0", null, "perception");
+  updated(combat.combatants[0], { initiative: null });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(combat.combatants[0].initiative, null);
+  assert.equal(calls.filter(call => call[0] === "stealth").length, 2);
 });
 
 test("Begin replaces an existing Perception roll with Scout-prepared Stealth",async()=>{
