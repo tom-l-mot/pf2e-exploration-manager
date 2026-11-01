@@ -1,11 +1,11 @@
-import { ID, authority, capture, snapshot, participants, selection, prepareAutomaticScouting, clearBeforeStart } from "./handoff.js";
+import { ID, authority, capture, snapshot, participants, effectiveSelection, prepareAutomaticScouting, initiativeRecorded, replaySelections, finishReplay } from "./handoff.js";
 
 const starts = new WeakMap();
 const stealthRolls = new WeakMap();
 const committingStarts = new WeakSet();
 export const SHIELD = "Compendium.pf2e.equipment-effects.Item.2YgXoHvJfrDHucMr";
 const automatic = combat => !!combat && game.user.isActiveGM && game.system.id === "pf2e" && game.combats.get(combat.id) === combat && !combat.started && game.settings.get(ID, "cleanup") === "automatic";
-const sneaking = c => c.actor?.type === "character" && selection(c.actor).some(id => c.actor.items.get(id)?.system.slug === "avoid-notice");
+const sneaking = c => c.actor?.type === "character" && effectiveSelection(c.parent, c.actor).some(id => c.actor.items.get(id)?.system.slug === "avoid-notice");
 const recordedStealth = c => Number.isFinite(c.initiative) && c.flags?.pf2e?.initiativeStatistic === "stealth";
 
 function rejectStartingInitiative(combat) {
@@ -33,13 +33,15 @@ function ensureStealth(combat, c, options = {}, reroll = false) {
     if (!result && reroll) return;
     if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
     await combat.setInitiative(c.id, result.roll.total, "stealth");
+    await initiativeRecorded(combat);
   })().finally(() => { if (stealthRolls.get(c) === pending) stealthRolls.delete(c); });
   stealthRolls.set(c, pending);
   return pending;
 }
 
-export function addedCombatant(combatant) {
-  return ensureStealth(combatant.parent, combatant, { skipDialog: true });
+export async function addedCombatant(combatant) {
+  await ensureStealth(combatant.parent, combatant, { skipDialog: true });
+  await initiativeRecorded(combatant.parent);
 }
 
 export async function dispatchCombatStart(combat, updateData) {
@@ -83,6 +85,7 @@ export async function rollMissing(combat) {
     authority(combat);
   }
   if (combat.combatants.some(c => !Number.isFinite(c.initiative))) throw new Error("Some initiative rolls did not complete. Exploration selections were retained.");
+  await initiativeRecorded(combat);
 }
 
 export async function openingDefend(combat) {
@@ -118,7 +121,7 @@ async function automaticStart(combat) {
     throw new Error("Automatic handoff requires the combat, Hooks, and ActiveEffect APIs. Exploration selections were retained.");
   }
   for (const { actor } of participants(combat).values()) {
-    if (selection(actor).some(id => actor.items.get(id)?.system.slug === "defend") &&
+    if (effectiveSelection(combat, actor).some(id => actor.items.get(id)?.system.slug === "defend") &&
         actor.heldShield && !actor.heldShield.isBroken && !actor.heldShield.isDestroyed &&
         !actor.items.find(item => item.type === "effect" && item.sourceId === SHIELD) &&
         typeof game.pf2e?.actions?.raiseAShield !== "function") {
@@ -136,8 +139,12 @@ async function automaticStart(combat) {
   // Await returned hook work before clearing the exploration selections it reads.
   combat._playCombatSound("startEncounter");
   const updateData = { round: 1, turn: 0 };
-  await dispatchCombatStart(combat, updateData);
-  await clearBeforeStart(combat);
+  try {
+    await replaySelections(combat);
+    await dispatchCombatStart(combat, updateData);
+  } finally {
+    await finishReplay(combat);
+  }
   await openingDefend(combat);
   if (!game.user.isActiveGM) throw new Error("The active GM changed during encounter preparation.");
   await combat.update(updateData);
@@ -166,10 +173,20 @@ export async function trackerInitiative(wrapped, ...args) {
   rejectStartingInitiative(this);
   if (!automatic(this)) return this;
   const ordinary = ids.filter(id => !avoiders.some(c => c.id === id && sneaking(c)) && this.combatants.some(c => c.id === id));
-  return ordinary.length || !ids.length ? wrapped(ordinary, ...args.slice(1)) : this;
+  const result = ordinary.length || !ids.length ? await wrapped(ordinary, ...args.slice(1)) : this;
+  await initiativeRecorded(this);
+  return result;
+}
+
+export async function recordedInitiative(wrapped, ...args) {
+  rejectStartingInitiative(this);
+  const result = await wrapped(...args);
+  await initiativeRecorded(this);
+  return result;
 }
 
 export function registerAutomatic() {
   libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.startCombat", startCombat, "MIXED");
   libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.rollInitiative", trackerInitiative, "MIXED");
+  libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.setInitiative", recordedInitiative, "WRAPPER");
 }

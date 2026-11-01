@@ -24,8 +24,9 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
   const actor = { uuid: "Actor.hero", name: "Hero", type: "character", alliance: "party", flags: {}, items,
     system: { exploration: ids, initiative: { statistic: "perception" } }, heldShield: { isBroken: false, isDestroyed: false },
     getFlag: (_id, key) => actor.flags[key],
-    async update(data) { calls.push(["clear"]); actor.system.exploration = data["system.exploration"]; actor.flags.clearReceipt = data[`flags.${ID}.clearReceipt`]; },
-    async createEmbeddedDocuments(_type, data) { items.push(...data); }
+    async update(data, options) { calls.push(["clear", options]); actor.system.exploration = data["system.exploration"]; actor.flags.clearReceipt = data[`flags.${ID}.clearReceipt`]; },
+    async createEmbeddedDocuments(_type, data) { items.push(...data.map(item => ({ ...item, id: `effect${items.length}` }))); },
+    async deleteEmbeddedDocuments(_type, ids) { for (const id of ids) items.splice(items.findIndex(item => item.id === id), 1); }
   };
   actor.initiative = new Initiative(actor, { statistic: "perception" });
   const combatants = initiatives.map((initiative, index) => ({ id: `c${index}`, actor, initiative, flags: {pf2e:{initiativeStatistic:"perception"}} }));
@@ -78,13 +79,209 @@ for (const marker of markerIds) test(`recorded initiative clears arbitrary nativ
   assert.equal(combat.started, false);
 });
 
+test("ordinary tracker and direct initiative writes await cleanup, while cancelled writes preserve selection", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  assert.equal(await trackerInitiative.call(combat, async () => { combat.combatants[0].initiative = 0; return "native result"; }, ["c0"]), "native result");
+  assert.deepEqual(actor.system.exploration, []);
+  const next = fixture({ ids: ["defend"] });
+  await assert.rejects(automatic.recordedInitiative.call(next.combat, async () => { throw Error("cancelled"); }, "c0", 8), /cancelled/);
+  assert.deepEqual(next.actor.system.exploration, ["defend"]);
+  assert.equal(await automatic.recordedInitiative.call(next.combat, async () => { next.combat.combatants[0].initiative = 0; return 17; }, "c0", 0), 17);
+  assert.deepEqual(next.actor.system.exploration, []);
+});
+
+test("cleanup is per actor, waits for linked rolls, and completes for a late join in a started encounter", async () => {
+  const { actor, combat } = fixture({ ids: ["custom"], initiatives: [0, null] });
+  combat.combatants.push({ id: "npc", actor: { type: "npc" }, initiative: null });
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(actor.system.exploration, ["custom"]);
+  combat.combatants[1].initiative = -1;
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(handoff.effectiveSelection(combat, actor), ["custom"]);
+  const next = fixture({ ids: ["late-custom"], initiatives: [9] });
+  next.combat.started = true;
+  await automatic.addedCombatant(next.combat.combatants[0]);
+  assert.deepEqual(next.actor.system.exploration, []);
+});
+
+test("automatic snapshot refreshes pre-roll edits, freezes after receipt, and respects explicit edits", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  await handoff.capture(combat);
+  actor.system.exploration = ["defend", "arbitrary-custom-action"];
+  combat.combatants[0].initiative = 8;
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(handoff.snapshot(combat).entries[0].activityIds, ["defend", "arbitrary-custom-action"]);
+  actor.system.exploration = ["scout"];
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+  assert.deepEqual(handoff.effectiveSelection(combat, actor), ["scout"]);
+  assert.deepEqual(handoff.snapshot(combat).entries[0].activityIds, ["defend", "arbitrary-custom-action"]);
+  actor.flags.clearReceipt.clearedIds = ["unmatched"];
+  actor.system.exploration = [];
+  assert.deepEqual(handoff.effectiveSelection(combat, actor), []);
+});
+
+test("only consumed canonical initiative effects and exploration markers end after initiative", async () => {
+  const { actor, combat } = fixture({ ids: ["follow-expert"], initiatives: [0] });
+  const consumed = [SCOUT, INCREDIBLE_SCOUT, handoff.SCOUT_DEDICATION, "Compendium.pf2e.other-effects.Item.VCSpuc3Tf3XWMkd3"];
+  actor.items.push(...consumed.map((sourceId, i) => ({ id: `consumed${i}`, type: "effect", sourceId })));
+  const buffs = [{ id: "shield", type: "effect", sourceId: SHIELD }, { id: "spell", type: "effect", sourceId: "Compendium.pf2e.spell-effects.Item.spell", system: { slug: "scout" } }, { id: "rune", type: "weapon", system: { runes: { property: ["flaming"] } } }, { id: "condition", type: "condition", sourceId: SCOUT }];
+  actor.items.push(...buffs);
+  await handoff.initiativeRecorded(combat);
+  assert.equal(actor.items.some(item => item.id?.startsWith("consumed")), false);
+  assert.ok(buffs.every(item => actor.items.includes(item)));
+});
+
+test("Scout remains available for an unrolled ally after its source rolls and clears", async () => {
+  const source = fixture({ ids: ["scout"], initiatives: [0] });
+  const ally = fixture({ ids: [], initiatives: [null] }).actor;
+  ally.uuid = "Actor.ally";
+  game.combats.set(source.combat.id, source.combat);
+  source.combat.combatants.push({ id: "ally", actor: ally, initiative: null, parent: source.combat });
+  await handoff.prepareAutomaticScouting(source.combat, ["c0", "ally"]);
+  await handoff.initiativeRecorded(source.combat);
+  assert.deepEqual(source.actor.system.exploration, []);
+  assert.equal(source.actor.items.some(item => item.flags?.core?.sourceId === SCOUT), false);
+  assert.equal(ally.items.some(item => item.flags?.core?.sourceId === SCOUT), true);
+  await handoff.prepareAutomaticScouting(source.combat, ["ally"]);
+  assert.equal(ally.items.filter(item => item.flags?.core?.sourceId === SCOUT).length, 1);
+});
+
+test("Scout Dedication supplies the stronger Scout benefit before the roll", async () => {
+  const { actor, combat, calls } = fixture({ ids: ["scout", "avoid"] });
+  actor.items.push({ type: "feat", system: { slug: "scout-dedication" } });
+  await automatic.addedCombatant(combat.combatants[0]);
+  assert.deepEqual(calls.find(call => call[0] === "stealth").at(-1), [INCREDIBLE_SCOUT]);
+  assert.equal(actor.items.some(item => item.flags?.core?.sourceId === INCREDIBLE_SCOUT), false);
+});
+
+test("Begin replays receipt-owned native actions without pre-update hooks and clears replay after returned callbacks", async () => {
+  const { actor, combat, calls } = fixture({ ids: ["defend", "custom"], initiatives: [0] });
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(actor.system.exploration, []);
+  Hooks.on("combatStart", async () => {
+    await Promise.resolve();
+    assert.deepEqual(actor.system.exploration, ["defend", "custom"]);
+    assert.equal(actor.flags.clearReceipt.phase, "replaying");
+  });
+  await startCombat.call(combat, () => assert.fail());
+  assert.deepEqual(actor.system.exploration, []);
+  assert.equal(actor.flags.clearReceipt.phase, "cleared");
+  assert.ok(calls.filter(call => call[0] === "clear").every(call => call[1].noHook === true));
+});
+
+test("stale replay recovers on the active GM and preserves user edits or mismatching receipts", async () => {
+  const { actor, combat } = fixture({ ids: ["avoid"], initiatives: [0] });
+  await handoff.initiativeRecorded(combat);
+  await handoff.replaySelections(combat);
+  game.user.isActiveGM = false;
+  await handoff.recoverReplays();
+  assert.deepEqual(actor.system.exploration, ["avoid"]);
+  game.user.isActiveGM = true;
+  await handoff.recoverReplays();
+  assert.deepEqual(actor.system.exploration, []);
+  await handoff.replaySelections(combat);
+  actor.system.exploration = ["user-edit"];
+  await handoff.recoverReplays();
+  assert.deepEqual(actor.system.exploration, ["user-edit"]);
+  actor.system.exploration = ["avoid"];
+  actor.flags.clearReceipt.clearedIds = ["other"];
+  await handoff.recoverReplays();
+  assert.deepEqual(actor.system.exploration, ["avoid"]);
+});
+
+test("Begin finishes its owned replay even when an encounter callback removes the actor", async () => {
+  const { actor, combat } = fixture({ ids: ["avoid"], initiatives: [0] });
+  combat.combatants[0].flags.pf2e.initiativeStatistic = "stealth";
+  const load = fromUuid;
+  globalThis.fromUuid = uuid => uuid === actor.uuid ? actor : load(uuid);
+  Hooks.on("combatStart", () => { combat.combatants.splice(0); });
+  await startCombat.call(combat, () => assert.fail());
+  assert.deepEqual(actor.system.exploration, []);
+  assert.equal(actor.flags.clearReceipt.phase, "cleared");
+});
+
+test("delayed exact markers reconcile only against a matching clear receipt and empty native selection", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"], initiatives: [0] });
+  await handoff.initiativeRecorded(combat);
+  const marker = { id: "late", parent: actor, type: "effect", sourceId: `Compendium.pf2e-automations.effects.Item.${markerIds[0]}` };
+  actor.items.push(marker);
+  await handoff.reconcileMarker(marker);
+  assert.equal(actor.items.includes(marker), false);
+  const scout = { ...marker, id: "canonical", sourceId: SCOUT };
+  actor.items.push(scout);
+  await handoff.reconcileMarker(scout);
+  assert.equal(actor.items.includes(scout), true);
+  actor.items.push(marker);
+  actor.system.exploration = ["user-edit"];
+  await handoff.reconcileMarker(marker);
+  assert.equal(actor.items.includes(marker), true);
+  actor.system.exploration = [];
+  actor.flags.clearReceipt.clearedIds = ["other"];
+  await handoff.reconcileMarker(marker);
+  assert.equal(actor.items.includes(marker), true);
+});
+
+for (const mode of ["off", "review"]) test(`${mode} preserves markers and native selections after a successful initiative write`, async () => {
+  const { actor, combat } = fixture({ ids: ["custom"] });
+  game.settings.get = () => mode;
+  const marker = { id: "marker", type: "effect", sourceId: `Compendium.pf2e-automations.effects.Item.${markerIds[0]}` };
+  actor.items.push(marker);
+  await automatic.recordedInitiative.call(combat, async () => { combat.combatants[0].initiative = 9; });
+  assert.deepEqual(actor.system.exploration, ["custom"]);
+  assert.ok(actor.items.includes(marker));
+  assert.equal(handoff.snapshot(combat), undefined);
+});
+
+test("failed capture and rejected actor writes cannot claim cleanup ownership; failed effect deletion retries", async () => {
+  const { actor, combat } = fixture({ ids: ["custom"], initiatives: [0] });
+  const save = combat.setFlag;
+  combat.setFlag = async () => { throw Error("snapshot failed"); };
+  await assert.rejects(handoff.initiativeRecorded(combat), /snapshot failed/);
+  assert.deepEqual(actor.system.exploration, ["custom"]);
+  combat.setFlag = save;
+  const update = actor.update;
+  actor.update = async () => { throw Error("actor failed"); };
+  await assert.rejects(handoff.initiativeRecorded(combat), /actor failed/);
+  assert.equal(actor.flags.clearReceipt, undefined);
+  actor.update = update;
+  actor.items.push({ id: "marker", type: "effect", sourceId: `Compendium.pf2e-automations.effects.Item.${markerIds[0]}` });
+  const remove = actor.deleteEmbeddedDocuments;
+  actor.deleteEmbeddedDocuments = async () => { throw Error("effect failed"); };
+  await assert.rejects(handoff.initiativeRecorded(combat), /effect failed/);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["custom"]);
+  actor.deleteEmbeddedDocuments = remove;
+  await handoff.initiativeRecorded(combat);
+  assert.equal(actor.items.some(item => item.id === "marker"), false);
+});
+
+test("cleanup stops after authority or participant changes while saving the snapshot", async () => {
+  for (const change of ["gm", "participant", "initiative"]) {
+    const { actor, combat } = fixture({ ids: ["custom"], initiatives: [0] });
+    const save = combat.setFlag;
+    combat.setFlag = async (...args) => {
+      await save(...args);
+      if (change === "gm") game.user.isActiveGM = false;
+      if (change === "participant") combat.combatants.splice(0);
+      if (change === "initiative") combat.combatants[0].initiative = null;
+    };
+    if (change === "gm") await assert.rejects(handoff.initiativeRecorded(combat), /active GM/);
+    else await handoff.initiativeRecorded(combat);
+    assert.deepEqual(actor.system.exploration, ["custom"]);
+    assert.equal(actor.flags.clearReceipt, undefined);
+  }
+});
+
 test("automatic wrappers register MIXED because they can resolve without calling native methods",()=>{
   const registrations=[];
   globalThis.libWrapper={register(...args){registrations.push(args);}};
   automatic.registerAutomatic();
   assert.deepEqual(registrations,[
     [ID,"CONFIG.Combat.documentClass.prototype.startCombat",startCombat,"MIXED"],
-    [ID,"CONFIG.Combat.documentClass.prototype.rollInitiative",trackerInitiative,"MIXED"]
+    [ID,"CONFIG.Combat.documentClass.prototype.rollInitiative",trackerInitiative,"MIXED"],
+    [ID,"CONFIG.Combat.documentClass.prototype.setInitiative",automatic.recordedInitiative,"WRAPPER"]
   ]);
 });
 
@@ -124,9 +321,9 @@ test("Begin automatically prepares strongest Scout, preserves zero, rolls only m
   const result = await startCombat.call(combat, () => assert.fail("native fallback"));
   assert.equal(result,combat);
   assert.deepEqual(combat.combatants.map(c=>c.initiative),[0,14]);
-  assert.deepEqual(calls.find(c=>c[0]==="stealth"),["stealth","stealth",true,false,[]]);
+  assert.deepEqual(calls.find(c=>c[0]==="stealth"),["stealth","stealth",true,false,[INCREDIBLE_SCOUT]]);
   assert.equal(actor.system.initiative.statistic,"perception");
-  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:"Combat.test",clearedIds:["scout","defend","avoid"]});
+  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:"Combat.test",clearedIds:["scout","defend","avoid"],phase:"cleared"});
   assert.deepEqual(calls.find(c=>c[0]==="round"),["round",{round:1,turn:0},[]]);
   assert.deepEqual(effects,[{"system.duration.value":0,"system.duration.unit":"rounds","system.duration.expiry":"turn-start","system.start.value":123,"system.start.initiative":14}]);
   assert.ok(calls.findIndex(c=>c[0]==="clear") < calls.findIndex(c=>c[0]==="raise"));
@@ -197,7 +394,7 @@ test("native Hooks ignores promises but Begin waits for late readers, dispatches
   assert.deepEqual(calls.find(c=>c[0]==="round"),["round",{round:1,turn:2},[]]);
 });
 
-for(const failure of ["sync","async"]) test(`${failure} callback failure settles other readers before rejecting and preserves selections and round`,async()=>{
+for(const failure of ["sync","async"]) test(`${failure} callback failure settles readers, clears replay and preserves recovery and round`,async()=>{
   const {actor,combat,nativeErrors}=fixture({initiatives:[0],ids:["scout"]});
   const gate=deferred(),entered=deferred();let late;
   Hooks.on("combatStart",()=>{if(failure==="sync")throw Error("reader failed");return Promise.reject(Error("reader failed"));});
@@ -208,8 +405,8 @@ for(const failure of ["sync","async"]) test(`${failure} callback failure settles
   assert.equal(combat.started,false);
   gate.release();await rejected;
   assert.deepEqual(late,["scout"]);
-  assert.deepEqual(actor.system.exploration,["scout"]);
-  assert.equal(actor.flags.clearReceipt,undefined);
+  assert.deepEqual(actor.system.exploration,[]);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds,["scout"]);
   assert.equal(nativeErrors.length,failure==="sync"?1:0);
 });
 
@@ -248,7 +445,7 @@ test("existing raised shield is normalized without toggling; invalid shield warn
 test("native round update failure propagates with recoverable receipt",async()=>{
   const {actor,combat}=fixture({initiatives:[0],ids:["scout"]});combat.update=async()=>{throw Error("disk failed");};
   await assert.rejects(startCombat.call(combat,()=>assert.fail()),/disk failed/);
-  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:combat.uuid,clearedIds:["scout"]});assert.equal(combat.started,false);
+  assert.deepEqual(actor.flags.clearReceipt,{combatUuid:combat.uuid,clearedIds:["scout"],phase:"cleared"});assert.equal(combat.started,false);
 });
 
 test("duplicate Begin during the final native refresh shares the pending start",async()=>{
@@ -271,9 +468,9 @@ test("adding an Avoid Notice combatant automatically records Stealth without cha
   assert.equal(combat.combatants[0].initiative,14);
   assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic,"stealth");
   assert.equal(actor.system.initiative.statistic,"perception");
-  assert.deepEqual(actor.system.exploration,["avoid"]);
+  assert.deepEqual(actor.system.exploration,[]);
   assert.equal(combat.started,false);
-  assert.equal(calls.some(c=>c[0]==="clear"),false);
+  assert.equal(calls.some(c=>c[0]==="clear"),true);
 });
 
 test("Begin replaces an existing Perception roll with Scout-prepared Stealth",async()=>{
@@ -419,7 +616,7 @@ test("Begin waits for a tracker reroll queued behind the automatic add before cl
   rerollGate.release();
   await Promise.all([add,begin,reroll]);
   assert.equal(startedWhileRerollPending,false);
-  assert.deepEqual(selectionWhileRerollPending,["avoid"]);
+  assert.deepEqual(selectionWhileRerollPending,[]);
   assert.equal(combat.combatants[0].initiative,18);
   assert.equal(rolls,2);
   assert.equal(combat.started,true);
