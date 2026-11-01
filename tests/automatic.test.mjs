@@ -403,6 +403,42 @@ test("Begin waits for a tracker reroll queued behind the automatic add before cl
   assert.equal(combat.started,true);
 });
 
+for(const failure of [false,true]) test(`tracker rolls are rejected during encounter callbacks and unlocked after ${failure?"failure":"success"}`,async()=>{
+  const {actor,combat,calls}=fixture({ids:["avoid"]});
+  const gate=deferred(),entered=deferred();let detected;
+  Hooks.on("combatStart",async()=>{
+    detected=combat.combatants[0].initiative;
+    entered.release();await gate.promise;
+    if(failure)throw Error("reader failed");
+  });
+  const begin=startCombat.call(combat,()=>assert.fail());
+  const completed=begin.then(()=>null,error=>error);
+  await entered.promise;
+  actor.initiative.constructor.prototype.roll=async()=>({roll:{total:18}});
+  const rejected=await trackerInitiative.call(combat,()=>assert.fail(),["c0"],{skipDialog:false})
+    .then(()=>false,error=>/Begin Encounter.*resolving/.test(error.message));
+  const late={id:"late",actor,initiative:null,parent:combat};
+  combat.combatants.push(late);
+  await automatic.addedCombatant(late);
+  assert.equal(late.initiative,null);
+  combat.combatants.pop();
+  const during={initiative:combat.combatants[0].initiative,selection:[...actor.system.exploration]};
+  gate.release();
+  const error=await completed;
+  assert.equal(rejected,true);
+  assert.deepEqual(during,{initiative:14,selection:["avoid"]});
+  assert.equal(detected,14);
+  assert.equal(calls.filter(c=>c[0]==="initiative").length,1);
+  if(failure){
+    assert.match(error.message,/Encounter automation failed/);
+    await trackerInitiative.call(combat,()=>assert.fail(),["c0"]);
+    assert.equal(combat.combatants[0].initiative,18);
+  }else{
+    assert.equal(error,null);
+    assert.equal(await trackerInitiative.call(combat,()=>"native",["c0"]),"native");
+  }
+});
+
 test("a failed automatic Stealth roll can be retried without clearing exploration",async()=>{
   const {actor,combat}=fixture({ids:["avoid"]});
   actor.initiative.constructor.prototype.roll=async()=>null;

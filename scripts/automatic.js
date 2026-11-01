@@ -2,14 +2,19 @@ import { ID, authority, capture, snapshot, participants, selection, prepareAutom
 
 const starts = new WeakMap();
 const stealthRolls = new WeakMap();
+const committingStarts = new WeakSet();
 export const SHIELD = "Compendium.pf2e.equipment-effects.Item.2YgXoHvJfrDHucMr";
 const automatic = combat => !!combat && game.user.isActiveGM && game.system.id === "pf2e" && game.combats.get(combat.id) === combat && !combat.started && game.settings.get(ID, "cleanup") === "automatic";
 const sneaking = c => c.actor?.type === "character" && selection(c.actor).some(id => c.actor.items.get(id)?.system.slug === "avoid-notice");
 const recordedStealth = c => Number.isFinite(c.initiative) && c.flags?.pf2e?.initiativeStatistic === "stealth";
 
+function rejectStartingInitiative(combat) {
+  if (committingStarts.has(combat)) throw new Error("Begin Encounter is resolving encounter callbacks. Wait for it to finish before rolling initiative.");
+}
+
 function ensureStealth(combat, c, options = {}, reroll = false) {
   const actor = c.actor;
-  const eligible = () => automatic(combat) && combat.combatants.some(current => current === c) && c.actor === actor && sneaking(c);
+  const eligible = () => automatic(combat) && !committingStarts.has(combat) && combat.combatants.some(current => current === c) && c.actor === actor && sneaking(c);
   if (!eligible()) return Promise.resolve();
   const predecessor = stealthRolls.get(c);
   if (predecessor && !reroll) return predecessor;
@@ -126,6 +131,7 @@ async function automaticStart(combat) {
   await capture(combat);
   await prepareAutomaticScouting(combat, combat.combatants.filter(c => sneaking(c) && !recordedStealth(c)).map(c => c.id));
   await rollMissing(combat);
+  committingStarts.add(combat);
   if (!game.user.isActiveGM) throw new Error("The active GM changed during encounter preparation.");
   // Await returned hook work before clearing the exploration selections it reads.
   combat._playCombatSound("startEncounter");
@@ -143,18 +149,21 @@ export function startCombat(wrapped, ...args) {
   if (!game.user.isActiveGM || game.settings.get(ID, "cleanup") !== "automatic") return wrapped(...args);
   if (starts.has(this)) return starts.get(this);
   if (this.started) return wrapped(...args);
-  const pending = automaticStart(this).finally(() => starts.delete(this));
+  const pending = automaticStart(this).finally(() => { committingStarts.delete(this); starts.delete(this); });
   starts.set(this, pending);
   return pending;
 }
 
 export async function trackerInitiative(wrapped, ...args) {
+  rejectStartingInitiative(this);
   if (!automatic(this)) return wrapped(...args);
   const [ids = [], options = {}] = args;
   await prepareAutomaticScouting(this, ids);
+  rejectStartingInitiative(this);
   if (!automatic(this)) return this;
   const avoiders = this.combatants.filter(c => ids.includes(c.id) && sneaking(c));
   await Promise.all(avoiders.map(c => ensureStealth(this, c, options, true)));
+  rejectStartingInitiative(this);
   if (!automatic(this)) return this;
   const ordinary = ids.filter(id => !avoiders.some(c => c.id === id && sneaking(c)) && this.combatants.some(c => c.id === id));
   return ordinary.length || !ids.length ? wrapped(ordinary, ...args.slice(1)) : this;
