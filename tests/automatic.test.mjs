@@ -374,6 +374,35 @@ test("an explicit tracker request waits for an automatic add then performs its r
   assert.equal(combat.combatants[0].initiative,18);
 });
 
+test("Begin waits for a tracker reroll queued behind the automatic add before clearing selections",async()=>{
+  const {actor,combat}=fixture({ids:["avoid"]});
+  const addGate=deferred(),addEntered=deferred(),rerollGate=deferred(),rerollEntered=deferred();let rolls=0;
+  actor.initiative.constructor.prototype.roll=async()=>{
+    const current=++rolls;
+    if(current===1){addEntered.release();await addGate.promise;}
+    else{rerollEntered.release();await rerollGate.promise;}
+    return {roll:{total:current===1?14:18}};
+  };
+  const add=automatic.addedCombatant(combat.combatants[0]);
+  await addEntered.promise;
+  const begin=startCombat.call(combat,()=>assert.fail());
+  await new Promise(resolve=>setImmediate(resolve));
+  const reroll=trackerInitiative.call(combat,()=>assert.fail(),["c0"],{skipDialog:false});
+  await new Promise(resolve=>setImmediate(resolve));
+  addGate.release();
+  await rerollEntered.promise;
+  await new Promise(resolve=>setImmediate(resolve));
+  const startedWhileRerollPending=combat.started;
+  const selectionWhileRerollPending=[...actor.system.exploration];
+  rerollGate.release();
+  await Promise.all([add,begin,reroll]);
+  assert.equal(startedWhileRerollPending,false);
+  assert.deepEqual(selectionWhileRerollPending,["avoid"]);
+  assert.equal(combat.combatants[0].initiative,18);
+  assert.equal(rolls,2);
+  assert.equal(combat.started,true);
+});
+
 test("a failed automatic Stealth roll can be retried without clearing exploration",async()=>{
   const {actor,combat}=fixture({ids:["avoid"]});
   actor.initiative.constructor.prototype.roll=async()=>null;

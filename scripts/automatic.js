@@ -11,12 +11,14 @@ function ensureStealth(combat, c, options = {}, reroll = false) {
   const actor = c.actor;
   const eligible = () => automatic(combat) && combat.combatants.some(current => current === c) && c.actor === actor && sneaking(c);
   if (!eligible()) return Promise.resolve();
-  if (stealthRolls.has(c)) return reroll ? stealthRolls.get(c).then(() => ensureStealth(combat, c, options, true)) : stealthRolls.get(c);
-  if (!reroll && recordedStealth(c)) return Promise.resolve();
-  const previous = c.initiative;
+  const predecessor = stealthRolls.get(c);
+  if (predecessor && !reroll) return predecessor;
+  if (!predecessor && !reroll && recordedStealth(c)) return Promise.resolve();
   const pending = (async () => {
+    if (predecessor) await predecessor;
     await prepareAutomaticScouting(combat, [c.id]);
     if (!eligible() || (!reroll && recordedStealth(c))) return;
+    const previous = c.initiative;
     // PF2e accepts a transient initiative statistic without changing the saved preference.
     const initiative = new actor.initiative.constructor(actor, { statistic: "stealth", tiebreakPriority: actor.initiative.tiebreakPriority });
     const result = await initiative.roll({ ...options, combatant: c, updateTracker: false,
@@ -26,7 +28,7 @@ function ensureStealth(combat, c, options = {}, reroll = false) {
     if (!result && reroll) return;
     if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
     await combat.setInitiative(c.id, result.roll.total, "stealth");
-  })().finally(() => stealthRolls.delete(c));
+  })().finally(() => { if (stealthRolls.get(c) === pending) stealthRolls.delete(c); });
   stealthRolls.set(c, pending);
   return pending;
 }
@@ -70,6 +72,11 @@ export async function rollMissing(combat) {
   authority(combat);
   const missing = combat.combatants.filter(c => !Number.isFinite(c.initiative)).map(c => c.id);
   if (missing.length) await combat.rollInitiative(missing, { skipDialog: true });
+  let pending;
+  while ((pending = combat.combatants.map(c => stealthRolls.get(c)).filter(Boolean)).length) {
+    await Promise.all(pending);
+    authority(combat);
+  }
   if (combat.combatants.some(c => !Number.isFinite(c.initiative))) throw new Error("Some initiative rolls did not complete. Exploration selections were retained.");
 }
 
