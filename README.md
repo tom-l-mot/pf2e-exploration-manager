@@ -2,7 +2,15 @@
 
 Begin Encounter automatically prepares Scout, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
 
-The manifest and runtime set no Foundry or PF2e version limits. Version 0.2.1 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. Other versions are untested and may have incompatible APIs. This local package has no update manifest URL. Node fixture checks are separate from live Foundry verification.
+The manifest and runtime set no Foundry or PF2e version limits. Version 0.2.1 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. Other versions are untested and may have incompatible APIs. Node fixture checks are separate from live Foundry verification.
+
+## Install from GitHub
+
+In Foundry's Install Module dialog, paste this manifest URL:
+
+https://github.com/tom-l-mot/pf2e-exploration-manager/releases/latest/download/module.json
+
+Release assets are available on the [GitHub releases page](https://github.com/tom-l-mot/pf2e-exploration-manager/releases). Enable Pathfinder Second Edition and libWrapper, then configure the ownership settings below.
 
 ## Install locally
 
