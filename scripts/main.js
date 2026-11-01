@@ -81,7 +81,7 @@ Hooks.on("updateUser", (_user, changes) => {
 });
 Hooks.on("createCombatant", combatant => { void addedCombatant(combatant).catch(reportError); });
 Hooks.on("updateCombatant", (combatant, changes) => {
-  if ("initiative" in changes) void addedCombatant(combatant).catch(reportError);
+  if (Number.isFinite(changes.initiative)) void addedCombatant(combatant).catch(reportError);
 });
 Hooks.on("createItem", item => { void reconcileMarker(item).catch(reportError); });
 Hooks.on("updateCombat", (combat, changes) => {
