@@ -139,7 +139,7 @@ function hasScoutingEffect(actor, incredible) {
   });
 }
 
-export function prepareAutomaticScouting(combat) {
+export function prepareAutomaticScouting(combat, rollingIds = []) {
   return queued(combat, async () => {
     if (!game.settings.get(ID, "scout") || combat.started) return;
     const party = [...participants(combat).values()];
@@ -154,7 +154,7 @@ export function prepareAutomaticScouting(combat) {
     for (const { actor, combatants } of allies) {
       authority(combat);
       if (combat.started) throw new Error("The encounter started during Scout preparation.");
-      if (combatants.some(c => Number.isFinite(c.initiative)) || hasScoutingEffect(actor, incredible)) continue;
+      if (combatants.some(c => Number.isFinite(c.initiative) && !rollingIds.includes(c.id)) || hasScoutingEffect(actor, incredible)) continue;
       const data = effect.toObject();
       delete data._id;
       data.flags ??= {};

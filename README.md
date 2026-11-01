@@ -1,8 +1,8 @@
 # PF2e Exploration Manager
 
-Begin Encounter automatically prepares Scout, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
+Automatic mode rolls Stealth when an Avoid Notice character joins the combat tracker. Begin Encounter repairs non-Stealth Avoid Notice initiative, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Scout is prepared before automatic rolls. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
 
-Version 0.2.2 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. The manifest records Foundry VTT 14.369 as verified. The manifest and runtime set no minimum or maximum Foundry or PF2e version limits. Verification applies to the inspected build. Other versions are untested and may have incompatible APIs. Node fixture checks are separate from live Foundry verification.
+Version 0.2.3 is a local test candidate using the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. The manifest records Foundry VTT 14.369 as verified. The manifest and runtime set no minimum or maximum Foundry or PF2e version limits. Verification applies to the inspected build. Other versions are untested and may have incompatible APIs. Node fixture checks are separate from live Foundry verification.
 
 ## Install from GitHub
 
@@ -17,7 +17,7 @@ Release assets are available on the [GitHub releases page](https://github.com/to
 Packaging requires Node.js and Windows `tar.exe`.
 
 1. Run `npm test`, `npm run check`, and `npm run package` in this directory.
-2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.2.zip` into the Foundry user data `Data/modules` folder.
+2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.3.zip` into the Foundry user data `Data/modules` folder.
 3. Enable libWrapper and PF2e Exploration Manager in the PF2e world.
 4. Set **Encounter cleanup** to **Automatic** if upgrading a world that saved Review or Off.
 5. When those modules are active, disable `pf2e-automations.deleteExploration` and `pf2e-avoid-notice.raiseShields`. Automatic start checks these ownership conflicts before changing documents.
@@ -26,9 +26,11 @@ Packaging requires Node.js and Windows `tar.exe`.
 
 Select activities on the native sheets, add tokens to the combat tracker, and click **Begin Encounter** as the active GM.
 
-Automatic Scout uses the strongest participating allied character with Scout selected. It prepares canonical +1 Scout or +2 Incredible Scout for participating characters whose PF2e alliance is party. It skips any actor with a rolled combatant and any equal or stronger existing Scout effect. PF2e owns stacking and effect removal. Tracker initiative rolls also prepare Scout. Direct sheet rolls remain native; this module does not intercept them. Existing finite initiative totals, including zero, remain unchanged.
+Automatic Scout uses the strongest participating allied character with Scout selected. It prepares canonical +1 Scout or +2 Incredible Scout for participating characters whose PF2e alliance is party. It skips actors with a rolled combatant whose total is being preserved and any equal or stronger existing Scout effect. A corrected or explicitly rerolled combatant can receive Scout before its replacement roll. PF2e owns stacking and effect removal. Tracker initiative rolls also prepare Scout. Direct sheet rolls remain native; this module does not intercept them.
 
-Begin Encounter rolls missing initiative with native PF2e and `skipDialog`. A character with Avoid Notice selected uses a separate native Stealth initiative statistic without changing the saved default preference. Other exploration benefits remain owned by PF2e and your existing integrations.
+Adding an Avoid Notice character to an unstarted tracker automatically rolls native Stealth initiative with `skipDialog` on the active GM client. Begin Encounter also replaces missing or non-Stealth Avoid Notice initiative, including an existing Perception total. A finite initiative recorded by PF2e as Stealth, including zero, is preserved. Tracker roll and reroll controls use Stealth for requested Avoid Notice characters and preserve native roll options. These rolls use a separate native initiative statistic without changing the actor's saved default preference. Other characters keep their existing finite totals and roll missing initiative normally.
+
+Scout must already be participating and selected when a roll occurs. Adding or selecting a Scout later does not retroactively change recorded Stealth or ordinary initiative. Explicitly reroll from the tracker to include the newly available Scout. This avoids silently changing a completed Stealth roll when Begin Encounter is clicked.
 
 The start snapshot precedes initiative and encounter callbacks. Native `combatStart` dispatch runs once with its normal callback order, once-listener behavior, and mutable update data. The module waits for every returned callback promise before clearing or advancing round one. A callback error stops this module's cleanup and round advancement after other returned promises settle. Previously completed rolls or integration writes are not rolled back. Detached work that a callback does not return cannot be awaited. Other modules own their own dialogs.
 
@@ -40,7 +42,7 @@ After eligible cleanup, selected Defend uses native Raise a Shield only when a u
 
 The combat tracker's **Exploration** button and Configure Settings' **Exploration handoff** menu provide optional manual Scout, clear, and restore controls. Manual clear requires confirmation that other automation has finished. Manual Scout retains explicit source and recipient selection.
 
-- Only the active GM writes saved PF2e documents. Snapshot, Scout, and recovery operations are serialized on that client. Concurrent Begin clicks for the same encounter share one pending start.
+- Only the active GM writes saved PF2e documents. Snapshot, Scout, and recovery operations are serialized on that client. Concurrent Begin clicks for the same encounter share one pending start. Overlapping tracker entry and Begin preparation share one pending Stealth roll per combatant. Removed combatants, changed activities, started encounters, and lost GM authority are rechecked before recording an awaited roll.
 - The Combat snapshot preserves activity IDs and labels. Linked combatants share one Actor entry; synthetic token actors keep their own UUID. NPC exploration selections are excluded.
 - Cleanup requires unchanged selections and finite initiative for every linked combatant. An Actor receipt and empty selection are written in the same update. An empty selection alone never proves ownership.
 - Restore requires a matching receipt and empty current selection. It restores surviving exploration action or feat IDs and deletes the receipt with Foundry 14 ForcedDeletion. A Combat suppression flag prevents another cleanup after restore.
@@ -51,7 +53,7 @@ The combat tracker's **Exploration** button and Configure Settings' **Exploratio
 
 ## Verify in a disposable world
 
-Node tests use source-shaped document and Hooks fixtures. Live verification must also check the actual Begin button, native Scout +1 and +2 roll modifiers, missing Avoid Notice Stealth rolls, and the absence of a module handoff dialog. Use equipped shields to check AC before and after the defender's first turn, including first, later, and tied initiative. Check an existing raised shield, delayed encounter readers, recovery without deprecation warnings, and changed selections. Preserve campaign actors and world time, and remove only test fixtures.
+Node tests use source-shaped document and Hooks fixtures. Live verification must also check tracker-entry Stealth, existing Perception correction, preserved Stealth zero, tracker rerolls, the actual Begin button, native Scout +1 and +2 roll modifiers, and the absence of a module handoff dialog. Use equipped shields to check AC before and after the defender's first turn, including first, later, and tied initiative. Check an existing raised shield, delayed encounter readers, recovery without deprecation warnings, and changed selections. Preserve campaign actors and world time, and remove only test fixtures.
 
 ## Source grounding
 
