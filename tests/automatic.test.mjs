@@ -15,6 +15,7 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
   class Initiative {
     constructor(actor, options) { this.actor = actor; this.options = options; this.tiebreakPriority = 2; }
     async roll(options) {
+      this.actor.lastRollOptions = options;
       calls.push(["stealth", this.options.statistic, options.skipDialog, options.updateTracker, this.actor.items.filter(i => i.type === "effect").map(i => i.flags?.core?.sourceId)]);
       return { combatant: options.combatant, roll: { total: 14 } };
     }
@@ -252,7 +253,7 @@ test("Begin replaces an existing Perception roll with Scout-prepared Stealth",as
 });
 
 test("tracker roll routes requested Avoid Notice combatants through Stealth and leaves ordinary IDs native",async()=>{
-  const {combat,calls}=fixture({initiatives:[20,null],ids:["avoid"]});
+  const {actor,combat,calls}=fixture({initiatives:[20,null],ids:["avoid"]});
   combat.combatants[1].actor={type:"npc"};
   const options={skipDialog:false,secret:true,extraRollOptions:["custom"],messageOptions:{messageMode:"blindroll"}};
   const native=[];
@@ -261,4 +262,114 @@ test("tracker roll routes requested Avoid Notice combatants through Stealth and 
   assert.deepEqual(native,[[["c1"],options]]);
   assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic,"stealth");
   assert.equal(calls.find(c=>c[0]==="stealth")[2],false);
+  assert.deepEqual(actor.lastRollOptions.extraRollOptions,["custom","secret"]);
+  assert.equal(actor.lastRollOptions.messageMode,"blindroll");
+  assert.equal(actor.lastRollOptions.updateTracker,false);
+  assert.deepEqual(options.extraRollOptions,["custom"]);
+});
+
+test("explicit tracker reroll replaces recorded Stealth zero and native cancellation preserves it",async()=>{
+  const {actor,combat,calls}=fixture({initiatives:[0],ids:["avoid"]});
+  combat.combatants[0].flags.pf2e.initiativeStatistic="stealth";
+  assert.equal(await trackerInitiative.call(combat,()=>assert.fail(),["c0"],{skipDialog:true}),combat);
+  assert.equal(combat.combatants[0].initiative,14);
+  actor.initiative.constructor.prototype.roll=async()=>null;
+  await trackerInitiative.call(combat,()=>assert.fail(),["c0"]);
+  assert.equal(combat.combatants[0].initiative,14);
+  assert.equal(calls.filter(c=>c[0]==="initiative").length,1);
+});
+
+test("overlapping add and Begin share one Stealth roll and await its recorded result",async()=>{
+  const {actor,combat,calls}=fixture({ids:["avoid"]});
+  const gate=deferred(),entered=deferred();let rolls=0;
+  actor.initiative.constructor.prototype.roll=async()=>{rolls++;entered.release();await gate.promise;return {roll:{total:17}};};
+  const add=automatic.addedCombatant(combat.combatants[0]);
+  await entered.promise;
+  const begin=startCombat.call(combat,()=>assert.fail());
+  await Promise.resolve();
+  assert.equal(combat.started,false);
+  gate.release();
+  await Promise.all([add,begin]);
+  assert.equal(rolls,1);
+  assert.equal(combat.combatants[0].initiative,17);
+  assert.equal(calls.filter(c=>c[0]==="initiative").length,1);
+  assert.equal(combat.started,true);
+});
+
+for(const change of ["removed","activity","actor","started","GM","mode","deleted"]) test(`add discards pending Stealth after ${change} changes`,async()=>{
+  const {actor,combat,calls}=fixture({ids:["avoid"]});
+  const c=combat.combatants[0],gate=deferred(),entered=deferred();
+  actor.initiative.constructor.prototype.roll=async()=>{entered.release();await gate.promise;return {roll:{total:19}};};
+  const pending=automatic.addedCombatant(c);
+  await entered.promise;
+  if(change==="removed")combat.combatants.splice(0,1);
+  if(change==="activity")actor.system.exploration=[];
+  if(change==="actor")c.actor={...actor};
+  if(change==="started")combat.started=true;
+  if(change==="GM")game.user.isActiveGM=false;
+  if(change==="mode")game.settings.get=()=>"off";
+  if(change==="deleted")game.combats.delete(combat.id);
+  gate.release();
+  await pending;
+  assert.equal(c.initiative,null);
+  assert.equal(calls.some(c=>c[0]==="initiative"),false);
+});
+
+for(const mode of ["off","review","nonGM","started"]) test(`${mode} leaves added combatants and tracker rolls native`,async()=>{
+  const {combat,calls}=fixture({ids:["avoid"]});
+  if(mode==="nonGM")game.user.isActiveGM=false;
+  else if(mode==="started")combat.started=true;
+  else game.settings.get=()=>mode;
+  await automatic.addedCombatant(combat.combatants[0]);
+  const options={skipDialog:false};let native;
+  assert.equal(await trackerInitiative.call(combat,(...args)=>{native=args;return "native";},["c0"],options),"native");
+  assert.deepEqual(native,[["c0"],options]);
+  assert.equal(calls.length,0);
+  assert.equal(combat.combatants[0].initiative,null);
+});
+
+test("a Scout selected after automatic Stealth does not retroactively reroll its recorded result",async()=>{
+  const {actor,combat,calls}=fixture({ids:["avoid"]});
+  await automatic.addedCombatant(combat.combatants[0]);
+  actor.system.exploration=["scout","avoid"];
+  await startCombat.call(combat,()=>assert.fail());
+  assert.equal(calls.filter(c=>c[0]==="stealth").length,1);
+  assert.equal(actor.items.filter(i=>i.type==="effect").length,0);
+  assert.equal(combat.combatants[0].initiative,14);
+});
+
+test("Begin prepares Scout before replacing all linked non-Stealth combatants",async()=>{
+  const {combat,calls}=fixture({initiatives:[22,10],ids:["scout","avoid"]});
+  await startCombat.call(combat,()=>assert.fail());
+  assert.deepEqual(combat.combatants.map(c=>c.flags.pf2e.initiativeStatistic),["stealth","stealth"]);
+  assert.deepEqual(calls.filter(c=>c[0]==="stealth").map(c=>c.at(-1)),[[SCOUT],[SCOUT]]);
+});
+
+test("an explicit tracker request waits for an automatic add then performs its requested reroll",async()=>{
+  const {actor,combat}=fixture({ids:["avoid"]});
+  const gate=deferred(),entered=deferred(),options=[];
+  actor.initiative.constructor.prototype.roll=async rollOptions=>{
+    options.push(rollOptions);
+    if(options.length===1){entered.release();await gate.promise;}
+    return {roll:{total:options.length===1?14:18}};
+  };
+  const add=automatic.addedCombatant(combat.combatants[0]);
+  await entered.promise;
+  const reroll=trackerInitiative.call(combat,()=>assert.fail(),["c0"],{skipDialog:false,secret:true});
+  gate.release();
+  await Promise.all([add,reroll]);
+  assert.equal(options.length,2);
+  assert.equal(options[1].skipDialog,false);
+  assert.deepEqual(options[1].extraRollOptions,["secret"]);
+  assert.equal(combat.combatants[0].initiative,18);
+});
+
+test("a failed automatic Stealth roll can be retried without clearing exploration",async()=>{
+  const {actor,combat}=fixture({ids:["avoid"]});
+  actor.initiative.constructor.prototype.roll=async()=>null;
+  await assert.rejects(automatic.addedCombatant(combat.combatants[0]),/Initiative did not complete/);
+  assert.deepEqual(actor.system.exploration,["avoid"]);
+  actor.initiative.constructor.prototype.roll=async()=>({roll:{total:16}});
+  await automatic.addedCombatant(combat.combatants[0]);
+  assert.equal(combat.combatants[0].initiative,16);
 });

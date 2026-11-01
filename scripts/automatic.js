@@ -1,7 +1,39 @@
 import { ID, authority, capture, snapshot, participants, selection, prepareAutomaticScouting, clearBeforeStart } from "./handoff.js";
 
 const starts = new WeakMap();
+const stealthRolls = new WeakMap();
 export const SHIELD = "Compendium.pf2e.equipment-effects.Item.2YgXoHvJfrDHucMr";
+const automatic = combat => !!combat && game.user.isActiveGM && game.system.id === "pf2e" && game.combats.get(combat.id) === combat && !combat.started && game.settings.get(ID, "cleanup") === "automatic";
+const sneaking = c => c.actor?.type === "character" && selection(c.actor).some(id => c.actor.items.get(id)?.system.slug === "avoid-notice");
+const recordedStealth = c => Number.isFinite(c.initiative) && c.flags?.pf2e?.initiativeStatistic === "stealth";
+
+function ensureStealth(combat, c, options = {}, reroll = false) {
+  const actor = c.actor;
+  const eligible = () => automatic(combat) && combat.combatants.some(current => current === c) && c.actor === actor && sneaking(c);
+  if (!eligible()) return Promise.resolve();
+  if (stealthRolls.has(c)) return reroll ? stealthRolls.get(c).then(() => ensureStealth(combat, c, options, true)) : stealthRolls.get(c);
+  if (!reroll && recordedStealth(c)) return Promise.resolve();
+  const previous = c.initiative;
+  const pending = (async () => {
+    await prepareAutomaticScouting(combat, [c.id]);
+    if (!eligible() || (!reroll && recordedStealth(c))) return;
+    // PF2e accepts a transient initiative statistic without changing the saved preference.
+    const initiative = new actor.initiative.constructor(actor, { statistic: "stealth", tiebreakPriority: actor.initiative.tiebreakPriority });
+    const result = await initiative.roll({ ...options, combatant: c, updateTracker: false,
+      extraRollOptions: [...(options.extraRollOptions ?? []), ...(options.secret ? ["secret"] : [])],
+      messageMode: options.messageOptions?.messageMode ?? options.messageMode });
+    if (!eligible() || (recordedStealth(c) && (!reroll || c.initiative !== previous))) return;
+    if (!result && reroll) return;
+    if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
+    await combat.setInitiative(c.id, result.roll.total, "stealth");
+  })().finally(() => stealthRolls.delete(c));
+  stealthRolls.set(c, pending);
+  return pending;
+}
+
+export function addedCombatant(combatant) {
+  return ensureStealth(combatant.parent, combatant, { skipDialog: true });
+}
 
 export async function dispatchCombatStart(combat, updateData) {
   const pending = [];
@@ -31,23 +63,12 @@ export async function dispatchCombatStart(combat, updateData) {
 }
 
 export async function rollMissing(combat) {
-  const ordinary = [];
-  for (const c of combat.combatants) {
+  for (const c of [...combat.combatants]) {
     authority(combat);
-    if (Number.isFinite(c.initiative)) continue;
-    const actor = c.actor;
-    const sneaking = actor?.type === "character" && selection(actor).some(id => actor.items.get(id)?.system.slug === "avoid-notice");
-    if (!sneaking) { ordinary.push(c.id); continue; }
-    // PF2e 8.6.1 ActorInitiative accepts a statistic without changing the saved preference.
-    const initiative = new actor.initiative.constructor(actor, { statistic: "stealth", tiebreakPriority: actor.initiative.tiebreakPriority });
-    const result = await initiative.roll({ combatant: c, skipDialog: true, updateTracker: false });
-    authority(combat);
-    if (Number.isFinite(c.initiative)) continue;
-    if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
-    await combat.setInitiative(c.id, result.roll.total, "stealth");
+    if (sneaking(c)) await ensureStealth(combat, c, { skipDialog: true });
   }
   authority(combat);
-  const missing = ordinary.filter(id => combat.combatants.some(c => c.id === id && !Number.isFinite(c.initiative)));
+  const missing = combat.combatants.filter(c => !Number.isFinite(c.initiative)).map(c => c.id);
   if (missing.length) await combat.rollInitiative(missing, { skipDialog: true });
   if (combat.combatants.some(c => !Number.isFinite(c.initiative))) throw new Error("Some initiative rolls did not complete. Exploration selections were retained.");
 }
@@ -96,7 +117,7 @@ async function automaticStart(combat) {
     if (game.modules.get(module)?.active && game.settings.get(module, setting)) throw new Error(`Disable ${module}.${setting} before automatic exploration handoff.`);
   }
   await capture(combat);
-  await prepareAutomaticScouting(combat);
+  await prepareAutomaticScouting(combat, combat.combatants.filter(c => sneaking(c) && !recordedStealth(c)).map(c => c.id));
   await rollMissing(combat);
   if (!game.user.isActiveGM) throw new Error("The active GM changed during encounter preparation.");
   // Await returned hook work before clearing the exploration selections it reads.
@@ -121,8 +142,15 @@ export function startCombat(wrapped, ...args) {
 }
 
 export async function trackerInitiative(wrapped, ...args) {
-  if (game.user.isActiveGM && !this.started && game.settings.get(ID, "cleanup") === "automatic") await prepareAutomaticScouting(this);
-  return wrapped(...args);
+  if (!automatic(this)) return wrapped(...args);
+  const [ids = [], options = {}] = args;
+  await prepareAutomaticScouting(this, ids);
+  if (!automatic(this)) return this;
+  const avoiders = this.combatants.filter(c => ids.includes(c.id) && sneaking(c));
+  await Promise.all(avoiders.map(c => ensureStealth(this, c, options, true)));
+  if (!automatic(this)) return this;
+  const ordinary = ids.filter(id => !avoiders.some(c => c.id === id && sneaking(c)) && this.combatants.some(c => c.id === id));
+  return ordinary.length || !ids.length ? wrapped(ordinary, ...args.slice(1)) : this;
 }
 
 export function registerAutomatic() {

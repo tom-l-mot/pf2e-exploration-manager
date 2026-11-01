@@ -1,4 +1,4 @@
-import { registerAutomatic } from "./automatic.js";
+import { registerAutomatic, addedCombatant } from "./automatic.js";
 import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -20,7 +20,7 @@ export function reviewContent(combat) {
     <p>Automatic mode waits for returned encounter callbacks before clearing eligible selections.</p>
     <table><thead><tr><th>Character</th><th>Current activities</th><th>Saved activities</th><th>Initiative and recovery</th></tr></thead><tbody>${rows}</tbody></table>
     <p>Automatic Begin Encounter resolves selected Defend with a usable held shield until the character's first turn.</p>
-    <p>Automatic Begin Encounter and tracker rolls prepare Scout for allied participating characters. Already rolled initiative is preserved. Manual preparation remains available for recovery.</p>`;
+    <p>Automatic mode rolls Stealth when Avoid Notice characters join the tracker. Begin Encounter repairs their non-Stealth initiative. Recorded Stealth is preserved unless explicitly rerolled. Scout is prepared before automatic rolls; later Scouts do not change existing totals. Manual preparation remains available for recovery.</p>`;
 }
 
 async function scoutDialog(combat) {
@@ -61,8 +61,8 @@ export function registerSettings() {
     constructor() { super(configuration(game.combat)); }
   }
   game.settings.registerMenu(ID, "handoff", { name: "Exploration handoff", label: "Open handoff", hint: "Review the selected encounter, prepare Scout, clear, or restore activities.", icon: "fas fa-person-hiking", type: HandoffMenu, restricted: true });
-  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Automatic Begin Encounter prepares Scout, rolls missing initiative, waits for encounter callbacks, clears selections, and resolves Defend.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Automatic" }, default: "automatic" });
-  game.settings.register(ID, "scout", { name: "Enable pre-roll scouting preparation", hint: "Prepares canonical PF2e Scout effects for allied participants before Begin Encounter or tracker initiative rolls.", scope: "world", config: true, type: Boolean, default: true });
+  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Automatic mode rolls Stealth for Avoid Notice on tracker entry. Begin Encounter repairs non-Stealth rolls, rolls missing initiative, waits for callbacks, clears selections, and resolves Defend.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Automatic" }, default: "automatic" });
+  game.settings.register(ID, "scout", { name: "Enable pre-roll scouting preparation", hint: "Prepares canonical PF2e Scout effects before automatic tracker-entry rolls, Begin Encounter, or tracker initiative rolls. Later Scouts do not change existing totals.", scope: "world", config: true, type: Boolean, default: true });
 }
 
 export async function encounterChanged(combat, { prompt = false } = {}) {
@@ -75,6 +75,7 @@ export async function encounterChanged(combat, { prompt = false } = {}) {
 
 Hooks.once("init", registerSettings);
 Hooks.once("ready", registerAutomatic);
+Hooks.on("createCombatant", combatant => { void addedCombatant(combatant).catch(reportError); });
 Hooks.on("updateCombat", (combat, changes) => {
   void encounterChanged(combat, { prompt: changes.round === 1 && changes.turn === 0 }).catch(reportError);
 });

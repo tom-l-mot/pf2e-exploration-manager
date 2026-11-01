@@ -368,6 +368,7 @@ test("native settings default to automatic and escape names and activity labels"
   assert.equal(registered.get("handoff").restricted, true);
   assert.equal(registered.get("scout").default, true);
   assert.equal(hooks.has("updateCombat"), true);
+  assert.equal(hooks.has("createCombatant"), true);
 });
 
 test("handoff explains the lifetime of recovery and marks deleted-encounter receipts", () => {
