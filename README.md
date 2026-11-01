@@ -2,7 +2,7 @@
 
 Begin Encounter automatically prepares Scout, rolls missing initiative, waits for returned encounter callbacks, clears eligible exploration selections, and resolves opening Defend. Use the native character-sheet activity picker. No module confirmation or handoff dialog is required in Automatic mode.
 
-The manifest and runtime set no Foundry or PF2e version limits. Version 0.2.1 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. Other versions are untested and may have incompatible APIs. Node fixture checks are separate from live Foundry verification.
+Version 0.2.2 uses the inspected Foundry VTT 14.369 and PF2e 8.6.1 lifecycle and requires Pathfinder Second Edition and libWrapper. The manifest records Foundry VTT 14.369 as verified. The manifest and runtime set no minimum or maximum Foundry or PF2e version limits. Verification applies to the inspected build. Other versions are untested and may have incompatible APIs. Node fixture checks are separate from live Foundry verification.
 
 ## Install from GitHub
 
@@ -17,7 +17,7 @@ Release assets are available on the [GitHub releases page](https://github.com/to
 Packaging requires Node.js and Windows `tar.exe`.
 
 1. Run `npm test`, `npm run check`, and `npm run package` in this directory.
-2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.1.zip` into the Foundry user data `Data/modules` folder.
+2. Close Foundry and extract `build/pf2e-exploration-manager-0.2.2.zip` into the Foundry user data `Data/modules` folder.
 3. Enable libWrapper and PF2e Exploration Manager in the PF2e world.
 4. Set **Encounter cleanup** to **Automatic** if upgrading a world that saved Review or Off.
 5. When those modules are active, disable `pf2e-automations.deleteExploration` and `pf2e-avoid-notice.raiseShields`. Automatic start checks these ownership conflicts before changing documents.
