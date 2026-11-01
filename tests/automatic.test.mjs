@@ -24,7 +24,11 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
   const actor = { uuid: "Actor.hero", name: "Hero", type: "character", alliance: "party", flags: {}, items,
     system: { exploration: ids, initiative: { statistic: "perception" } }, heldShield: { isBroken: false, isDestroyed: false },
     getFlag: (_id, key) => actor.flags[key],
-    async update(data, options) { calls.push(["clear", options]); actor.system.exploration = data["system.exploration"]; actor.flags.clearReceipt = data[`flags.${ID}.clearReceipt`]; },
+    async update(data, options) {
+      calls.push(["clear", options]);
+      if ("system.exploration" in data) actor.system.exploration = data["system.exploration"];
+      if (`flags.${ID}.clearReceipt` in data) actor.flags.clearReceipt = data[`flags.${ID}.clearReceipt`];
+    },
     async createEmbeddedDocuments(_type, data) { items.push(...data.map(item => ({ ...item, id: `effect${items.length}` }))); },
     async deleteEmbeddedDocuments(_type, ids) { for (const id of ids) items.splice(items.findIndex(item => item.id === id), 1); }
   };
@@ -790,7 +794,7 @@ test("nested native initiative callbacks keep the tracker's original selection b
   assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
 });
 
-test("initiative callbacks during an awaited replay cannot replace its snapshot or clear edits", async () => {
+for (const nextEncounter of [false, true]) test(`initiative callbacks during an awaited replay preserve edits for the next roll in ${nextEncounter ? "another" : "the same"} encounter`, async () => {
   const { actor, combat } = fixture({ ids: ["defend"], initiatives: [8] });
   const gate = deferred(), entered = deferred();
   Hooks.on("combatStart", async () => { entered.release(); await gate.promise; });
@@ -803,4 +807,16 @@ test("initiative callbacks during an awaited replay cannot replace its snapshot 
   gate.release();
   await pending;
   assert.deepEqual(actor.system.exploration, ["scout"]);
+  const finishedReceipt = actor.flags.clearReceipt;
+  if (nextEncounter) {
+    game.combats.set(combat.id, { id: combat.id, uuid: combat.uuid });
+    combat.id = "next";
+    combat.uuid = "Combat.next";
+    combat.flags = {};
+    game.combats.set(combat.id, combat);
+  }
+  await automatic.recordedInitiative.call(combat, async () => { combat.combatants[0].initiative = 10; return combat; }, "c0", 10);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(finishedReceipt, { combatUuid: "Combat.test", clearedIds: ["defend"], phase: "cleared" });
+  assert.deepEqual(actor.flags.clearReceipt, { combatUuid: combat.uuid, clearedIds: ["scout"], phase: "cleared" });
 });
