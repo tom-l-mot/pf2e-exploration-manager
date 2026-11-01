@@ -155,5 +155,5 @@ export async function trackerInitiative(wrapped, ...args) {
 
 export function registerAutomatic() {
   libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.startCombat", startCombat, "MIXED");
-  libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.rollInitiative", trackerInitiative, "WRAPPER");
+  libWrapper.register(ID, "CONFIG.Combat.documentClass.prototype.rollInitiative", trackerInitiative, "MIXED");
 }

@@ -56,6 +56,16 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
 }
 const deferred = () => { let release; const promise = new Promise(resolve => {release=resolve;}); return {promise,release}; };
 
+test("automatic wrappers register MIXED because they can resolve without calling native methods",()=>{
+  const registrations=[];
+  globalThis.libWrapper={register(...args){registrations.push(args);}};
+  automatic.registerAutomatic();
+  assert.deepEqual(registrations,[
+    [ID,"CONFIG.Combat.documentClass.prototype.startCombat",startCombat,"MIXED"],
+    [ID,"CONFIG.Combat.documentClass.prototype.rollInitiative",trackerInitiative,"MIXED"]
+  ]);
+});
+
 test("alternate version numbers allow automatic handoff", async () => {
   const { actor, combat } = fixture();
   game.release = { generation: 15, build: 1 };
