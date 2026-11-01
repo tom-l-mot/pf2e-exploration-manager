@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ID, SCOUT, INCREDIBLE_SCOUT } from "../scripts/handoff.js";
 import { startCombat, dispatchCombatStart, SHIELD, trackerInitiative } from "../scripts/automatic.js";
+import * as automatic from "../scripts/automatic.js";
 
 function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], incredible = false } = {}) {
   const calls = [];
@@ -25,16 +26,17 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
     async createEmbeddedDocuments(_type, data) { items.push(...data); }
   };
   actor.initiative = new Initiative(actor, { statistic: "perception" });
-  const combatants = initiatives.map((initiative, index) => ({ id: `c${index}`, actor, initiative }));
+  const combatants = initiatives.map((initiative, index) => ({ id: `c${index}`, actor, initiative, flags: {pf2e:{initiativeStatistic:"perception"}} }));
   const combat = { id: "test", uuid: "Combat.test", started: false, flags: {}, combatants,
     get turns() { return [...combatants].sort((a,b) => b.initiative-a.initiative); },
     getFlag: (_id, key) => combat.flags[key],
     async setFlag(_id,key,data) { combat.flags[key] = structuredClone(data); },
-    async setInitiative(id,total,statistic) { combatants.find(c => c.id === id).initiative = total; calls.push(["initiative",id,total,statistic]); },
+    async setInitiative(id,total,statistic) { const c = combatants.find(c => c.id === id); c.initiative = total; c.flags.pf2e.initiativeStatistic = statistic; calls.push(["initiative",id,total,statistic]); },
     async rollInitiative(ids, options) { calls.push(["ordinary", ids, options]); for(const id of ids) combatants.find(c => c.id === id).initiative = 8; },
     _playCombatSound(sound) { calls.push(["sound",sound]); },
     async update(data) { calls.push(["round",structuredClone(data),[...actor.system.exploration]]); combat.started = true; return combat; }
   };
+  for (const c of combatants) c.parent = combat;
   globalThis.game = { user: { isActiveGM:true }, release: { generation:14,build:369 }, system: {id:"pf2e",version:"8.6.1"}, time: {worldTime:123}, combats: new Map([[combat.id,combat]]), modules: new Map(),
     settings: { get: (module,key) => module===ID ? ({cleanup:"automatic",scout:true})[key] : false },
     pf2e: {actions: { async raiseAShield() { calls.push(["raise"]); const effect = {type:"effect",sourceId:SHIELD, async update(data) { effects.push(data); }}; items.push(effect); } }}
@@ -85,6 +87,7 @@ for (const missing of ["refresh", "sound", "hooks", "shield"]) test(`missing ${m
 
 test("Begin automatically prepares strongest Scout, preserves zero, rolls only missing with Stealth, clears then normalizes Defend", async () => {
   const {actor,combat,calls,effects} = fixture({initiatives:[0,null],incredible:true});
+  combat.combatants[0].flags.pf2e.initiativeStatistic = "stealth";
   const result = await startCombat.call(combat, () => assert.fail("native fallback"));
   assert.equal(result,combat);
   assert.deepEqual(combat.combatants.map(c=>c.initiative),[0,14]);
@@ -118,6 +121,7 @@ for(const initiative of [0,99]) test(`Stealth initiative assigned to ${initiativ
   const pending=startCombat.call(combat,()=>assert.fail("unexpected fallback"));
   await entered.promise;
   combat.combatants[0].initiative=initiative;
+  combat.combatants[0].flags.pf2e.initiativeStatistic="stealth";
   gate.release();
   await pending;
   assert.equal(combat.combatants[0].initiative,initiative);
@@ -226,4 +230,35 @@ test("duplicate Begin during the final native refresh shares the pending start",
   gate.release();
   assert.equal(await duplicate,combat);
   assert.equal(calls.filter(c=>c[0]==="hooks").length,1);
+});
+
+test("adding an Avoid Notice combatant automatically records Stealth without changing its saved default",async()=>{
+  const {actor,combat,calls}=fixture({ids:["avoid"]});
+  await automatic.addedCombatant(combat.combatants[0]);
+  assert.equal(combat.combatants[0].initiative,14);
+  assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic,"stealth");
+  assert.equal(actor.system.initiative.statistic,"perception");
+  assert.deepEqual(actor.system.exploration,["avoid"]);
+  assert.equal(combat.started,false);
+  assert.equal(calls.some(c=>c[0]==="clear"),false);
+});
+
+test("Begin replaces an existing Perception roll with Scout-prepared Stealth",async()=>{
+  const {combat,calls}=fixture({initiatives:[22],ids:["scout","avoid"]});
+  await startCombat.call(combat,()=>assert.fail());
+  assert.equal(combat.combatants[0].initiative,14);
+  assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic,"stealth");
+  assert.deepEqual(calls.find(c=>c[0]==="stealth").at(-1),[SCOUT]);
+});
+
+test("tracker roll routes requested Avoid Notice combatants through Stealth and leaves ordinary IDs native",async()=>{
+  const {combat,calls}=fixture({initiatives:[20,null],ids:["avoid"]});
+  combat.combatants[1].actor={type:"npc"};
+  const options={skipDialog:false,secret:true,extraRollOptions:["custom"],messageOptions:{messageMode:"blindroll"}};
+  const native=[];
+  const result=await trackerInitiative.call(combat,async(...args)=>{native.push(args);return combat;},["c0","c1"],options);
+  assert.equal(result,combat);
+  assert.deepEqual(native,[[["c1"],options]]);
+  assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic,"stealth");
+  assert.equal(calls.find(c=>c[0]==="stealth")[2],false);
 });
