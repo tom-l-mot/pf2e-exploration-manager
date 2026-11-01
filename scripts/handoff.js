@@ -163,9 +163,11 @@ export function finishReplay(combat) {
       authority(combat);
       if (!actor) continue;
       const entry = matchingEntry(combat, actor);
-      if (!entry || receipt(actor)?.phase !== "replaying" || !equal(selection(actor), entry.activityIds)) continue;
+      if (!entry || receipt(actor)?.phase !== "replaying") continue;
       authority(combat);
-      await actor.update({ "system.exploration": [], [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "cleared" } }, { noHook: true });
+      const update = { [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "cleared" } };
+      if (equal(selection(actor), entry.activityIds)) update["system.exploration"] = [];
+      await actor.update(update, { noHook: true });
       authority(combat);
       if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);
     }
