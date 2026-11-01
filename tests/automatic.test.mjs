@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ID, SCOUT, INCREDIBLE_SCOUT } from "../scripts/handoff.js";
 import { startCombat, dispatchCombatStart, SHIELD, trackerInitiative } from "../scripts/automatic.js";
 import * as automatic from "../scripts/automatic.js";
+import * as handoff from "../scripts/handoff.js";
 
 function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], incredible = false } = {}) {
   const calls = [];
@@ -55,6 +56,27 @@ function fixture({ initiatives = [null], ids = ["scout", "defend", "avoid"], inc
   return {actor,combat,calls,effects,nativeErrors};
 }
 const deferred = () => { let release; const promise = new Promise(resolve => {release=resolve;}); return {promise,release}; };
+
+const markerIds = ["N8vpuGy4TzU10y8E", "F6vJYLZTWDpnrnCZ", "GYOyFj4ziZX060rZ", "OjRHL0B4WAUUQc13", "V347nnVBGDrVWh7k", "vNUrKvoOSvEnqzhM", "tDsgl8YmhZbx2May", "kh1QdKkvbNZ0qBsQ", "mGFBHM1lvHNZ9BsH", "XiVLHjg5lQVMX8Fj", "OcCXjJab7rSR3mDf", "SggYzuL9NtYoktUR", "ThF8UIN5093xtCaq"];
+function deletable(actor) {
+  actor.deleteEmbeddedDocuments = async (_type, ids) => {
+    for (const id of ids) actor.items.splice(actor.items.findIndex(item => item.id === id), 1);
+  };
+}
+
+for (const marker of markerIds) test(`recorded initiative clears arbitrary native selection and exact marker ${marker}`, async () => {
+  const { actor, combat } = fixture({ ids: ["etch-rune-custom"], initiatives: [0] });
+  deletable(actor);
+  const sourceId = `Compendium.pf2e-automations.effects.Item.${marker}`;
+  const preserved = [SHIELD, "Compendium.pf2e.spell-effects.Item.rune", "Compendium.homebrew.effects.Item.same-name"];
+  actor.items.push({ id: "marker", name: "Etch Rune", type: "effect", sourceId }, ...preserved.map((sourceId, i) => ({ id: `buff${i}`, name: "Etch Rune", type: "effect", sourceId })));
+  await handoff.initiativeRecorded(combat);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["etch-rune-custom"]);
+  assert.equal(actor.items.some(item => item.id === "marker"), false);
+  assert.deepEqual(actor.items.filter(item => item.id?.startsWith("buff")).map(item => item.sourceId), preserved);
+  assert.equal(combat.started, false);
+});
 
 test("automatic wrappers register MIXED because they can resolve without calling native methods",()=>{
   const registrations=[];
