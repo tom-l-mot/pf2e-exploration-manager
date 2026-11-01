@@ -486,6 +486,30 @@ test("adding an Avoid Notice combatant automatically records Stealth without cha
   assert.equal(calls.some(c=>c[0]==="clear"),true);
 });
 
+test("the active GM repairs a player's Perception overwrite before Begin without recursive Stealth rolls", async () => {
+  const { actor, combat, calls } = fixture({ ids: ["scout", "avoid"] });
+  Hooks.once = () => {};
+  await import("../scripts/main.js");
+  const updated = Hooks.events.updateCombatant[0].fn;
+  const nativeSet = combat.setInitiative;
+  combat.setInitiative = (...args) => automatic.recordedInitiative.call(combat, async (...values) => {
+    await nativeSet(...values);
+    updated(combat.combatants[0], { initiative: values[1] });
+  }, ...args);
+  await automatic.addedCombatant(combat.combatants[0]);
+  await nativeSet("c0", 22, "perception");
+  updated(combat.combatants[0], { initiative: 22 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(combat.combatants[0].initiative, 14);
+  assert.equal(combat.combatants[0].flags.pf2e.initiativeStatistic, "stealth");
+  assert.equal(calls.filter(call => call[0] === "stealth").length, 2);
+  assert.deepEqual(calls.filter(call => call[0] === "stealth").map(call => call.at(-1)), [[SCOUT], [SCOUT]]);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["scout", "avoid"]);
+  assert.equal(actor.system.initiative.statistic, "perception");
+  assert.equal(combat.started, false);
+});
+
 test("Begin replaces an existing Perception roll with Scout-prepared Stealth",async()=>{
   const {combat,calls}=fixture({initiatives:[22],ids:["scout","avoid"]});
   await startCombat.call(combat,()=>assert.fail());
