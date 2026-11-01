@@ -5,6 +5,7 @@ export const SCOUT_DEDICATION = "Compendium.pf2e-automations.effects.Item.U7tuKc
 const MARKERS = new Set(["N8vpuGy4TzU10y8E", "F6vJYLZTWDpnrnCZ", "GYOyFj4ziZX060rZ", "OjRHL0B4WAUUQc13", "V347nnVBGDrVWh7k", "vNUrKvoOSvEnqzhM", "tDsgl8YmhZbx2May", "kh1QdKkvbNZ0qBsQ", "mGFBHM1lvHNZ9BsH", "XiVLHjg5lQVMX8Fj", "OcCXjJab7rSR3mDf", "SggYzuL9NtYoktUR", "ThF8UIN5093xtCaq"].map(id => `Compendium.pf2e-automations.effects.Item.${id}`));
 const CONSUMED = new Set([SCOUT, INCREDIBLE_SCOUT, SCOUT_DEDICATION, "Compendium.pf2e.other-effects.Item.VCSpuc3Tf3XWMkd3"]);
 let queue = Promise.resolve();
+const rollingBoundaries = new WeakMap();
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export const selection = actor => [...actor.system.exploration];
 export const avoidNotice = () => !!game.modules.get("pf2e-avoid-notice")?.active;
@@ -54,7 +55,32 @@ function captureEntries(combat) {
   }));
 }
 
-async function saveCapture(combat, entries, refresh = false) {
+export function initiativeBoundary(combat, combatantIds) {
+  return captureEntries(combat).filter(entry => entry.combatantIds.some(id => combatantIds.includes(id)))
+    .map(entry => rollingBoundaries.get(combat)?.get(entry.actorUuid)?.entry ?? entry);
+}
+
+export async function duringInitiative(combat, combatantIds, operation) {
+  // Nested native writes and hooks must keep the selection captured before the roll.
+  const boundary = initiativeBoundary(combat, combatantIds);
+  const pending = rollingBoundaries.get(combat) ?? new Map();
+  rollingBoundaries.set(combat, pending);
+  for (const entry of boundary) {
+    const held = pending.get(entry.actorUuid) ?? { entry, count: 0 };
+    held.count++;
+    pending.set(entry.actorUuid, held);
+  }
+  try { return await operation(boundary); }
+  finally {
+    for (const entry of boundary) {
+      const held = pending.get(entry.actorUuid);
+      if (--held.count === 0) pending.delete(entry.actorUuid);
+    }
+    if (!pending.size) rollingBoundaries.delete(combat);
+  }
+}
+
+async function saveCapture(combat, entries, refresh = false, replaceOwned = false) {
   const existing = snapshot(combat);
   if (existing && (existing.version !== 1 || !Array.isArray(existing.entries))) throw new Error("Unsupported exploration snapshot.");
   const merged = [...(existing?.entries ?? [])];
@@ -63,7 +89,7 @@ async function saveCapture(combat, entries, refresh = false) {
     if (index < 0) merged.push(entry);
     else if (refresh) {
       const owned = receipt(participants(combat).get(entry.actorUuid).actor);
-      if (!owned || expiredReceipt(owned)) merged[index] = entry;
+      if (!owned || expiredReceipt(owned) || (replaceOwned && entry.activityIds.length)) merged[index] = entry;
     }
   }
   if (!existing || !equal(merged, existing.entries)) {
@@ -80,19 +106,23 @@ async function removeExplorationEffects(combat, actor) {
   }
 }
 
-export function initiativeRecorded(combat) {
+export function initiativeRecorded(combat, boundary) {
   if (!combat || !game.user.isActiveGM || game.system.id !== "pf2e" || game.combats.get(combat.id) !== combat || game.settings.get(ID, "cleanup") !== "automatic") return Promise.resolve();
+  const entries = boundary ?? captureEntries(combat);
   return queued(combat, async () => {
     if (game.settings.get(ID, "cleanup") !== "automatic") return;
-    const eligible = [...participants(combat).values()].filter(({ combatants }) => combatants.every(c => Number.isFinite(c.initiative)));
-    await saveCapture(combat, captureEntries(combat).filter(entry => eligible.some(({ actor }) => actor.uuid === entry.actorUuid)), true);
+    const eligible = [...participants(combat).values()].filter(({ actor, combatants }) => receipt(actor)?.phase !== "replaying" && entries.some(entry => entry.actorUuid === actor.uuid && equal(selection(actor), entry.activityIds)) && combatants.every(c => Number.isFinite(c.initiative)));
+    const fresh = boundary ? entries.filter(entry => entry.activityIds.length && eligible.some(({ actor }) => actor.uuid === entry.actorUuid)) : [];
+    await saveCapture(combat, entries.filter(entry => eligible.some(({ actor }) => actor.uuid === entry.actorUuid)), true, !!boundary);
     for (const { actor, combatants } of eligible) {
       authority(combat);
       const current = participants(combat).get(actor.uuid);
-      if (!current || current.actor !== actor || current.combatants.some(c => !Number.isFinite(c.initiative)) || combatants.some(c => !Number.isFinite(c.initiative)) || combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) continue;
+      if (!current || current.actor !== actor || current.combatants.some(c => !Number.isFinite(c.initiative)) || combatants.some(c => !Number.isFinite(c.initiative))) continue;
       const owned = receipt(actor);
       if (owned?.phase === "replaying") continue;
-      if (owned && !expiredReceipt(owned)) {
+      const renewed = fresh.some(entry => entry.actorUuid === actor.uuid && equal(selection(actor), entry.activityIds));
+      if (!renewed && combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) continue;
+      if (!renewed && owned && !expiredReceipt(owned)) {
         if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);
         continue;
       }
@@ -102,6 +132,12 @@ export function initiativeRecorded(combat) {
         continue;
       }
       if (!equal(selection(actor), entry.activityIds)) continue;
+      if (renewed && combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) {
+        await combat.setFlag(ID, "restoredActorUuids", combat.getFlag(ID, "restoredActorUuids").filter(uuid => uuid !== actor.uuid));
+        authority(combat);
+        const latest = participants(combat).get(actor.uuid);
+        if (!latest || latest.actor !== actor || !equal(selection(actor), entry.activityIds) || latest.combatants.some(c => !Number.isFinite(c.initiative))) continue;
+      }
       await actor.update({ "system.exploration": [], [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "cleared" } }, { noHook: true });
       authority(combat);
       if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);

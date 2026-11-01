@@ -1,5 +1,5 @@
 import { registerAutomatic, addedCombatant, recoverReplays } from "./automatic.js";
-import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt, initiativeRecorded, reconcileMarker } from "./handoff.js";
+import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt, initiativeBoundary, initiativeRecorded, reconcileMarker } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const reportError = error => { console.error(ID, error); ui.notifications.error(error.message); };
@@ -81,7 +81,7 @@ Hooks.on("updateUser", (_user, changes) => {
 });
 Hooks.on("createCombatant", combatant => { void addedCombatant(combatant).catch(reportError); });
 Hooks.on("updateCombatant", (combatant, changes) => {
-  if ("initiative" in changes) void initiativeRecorded(combatant.parent).catch(reportError);
+  if ("initiative" in changes) void initiativeRecorded(combatant.parent, initiativeBoundary(combatant.parent, [combatant.id])).catch(reportError);
 });
 Hooks.on("createItem", item => { void reconcileMarker(item).catch(reportError); });
 Hooks.on("updateCombat", (combat, changes) => {

@@ -696,13 +696,11 @@ test("a fresh selection in another encounter replaces a live previous encounter 
   const { actor, combat } = fixture({ ids: ["scout"] });
   const roll = async () => { combat.combatants[0].initiative = 8; return combat; };
   await trackerInitiative.call(combat, roll, ["c0"]);
-  const old = { id: "previous", uuid: combat.uuid };
+  const old = { id: combat.id, uuid: combat.uuid };
   game.combats.set(old.id, old);
-  game.combats.delete(combat.id);
   combat.id = "next";
   combat.uuid = "Combat.next";
   combat.flags = {};
-  actor.flags.clearReceipt.combatUuid = "Combat.previous";
   game.combats.set(combat.id, combat);
   actor.system.exploration = ["defend"];
   await trackerInitiative.call(combat, roll, ["c0"]);
@@ -745,4 +743,35 @@ for (const rolled of [false, true]) test(`Begin consumes a fresh selection with 
   assert.deepEqual(actor.system.exploration, []);
   assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
   assert.deepEqual(seen, [["defend"]]);
+});
+
+test("nested native initiative callbacks keep the tracker's original selection boundary", async () => {
+  const { actor, combat } = fixture({ ids: ["scout"] });
+  await trackerInitiative.call(combat, async () => {
+    actor.system.exploration = ["defend"];
+    await automatic.recordedInitiative.call(combat, async () => {
+      combat.combatants[0].initiative = 8;
+      await handoff.initiativeRecorded(combat, handoff.initiativeBoundary(combat, ["c0"]));
+    }, "c0", 8);
+  }, ["c0"]);
+  assert.deepEqual(actor.system.exploration, ["defend"]);
+  assert.equal(actor.flags.clearReceipt, undefined);
+  await automatic.recordedInitiative.call(combat, async () => {}, "c0", 8);
+  assert.deepEqual(actor.system.exploration, []);
+  assert.deepEqual(actor.flags.clearReceipt.clearedIds, ["defend"]);
+});
+
+test("initiative callbacks during an awaited replay cannot replace its snapshot or clear edits", async () => {
+  const { actor, combat } = fixture({ ids: ["defend"], initiatives: [8] });
+  const gate = deferred(), entered = deferred();
+  Hooks.on("combatStart", async () => { entered.release(); await gate.promise; });
+  const pending = startCombat.call(combat, () => assert.fail());
+  await entered.promise;
+  actor.system.exploration = ["scout"];
+  await handoff.initiativeRecorded(combat, handoff.initiativeBoundary(combat, ["c0"]));
+  assert.deepEqual(actor.system.exploration, ["scout"]);
+  assert.deepEqual(handoff.snapshot(combat).entries[0].activityIds, ["defend"]);
+  gate.release();
+  await pending;
+  assert.deepEqual(actor.system.exploration, ["scout"]);
 });

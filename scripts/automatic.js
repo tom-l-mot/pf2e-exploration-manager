@@ -1,4 +1,4 @@
-import { ID, authority, capture, snapshot, participants, effectiveSelection, prepareAutomaticScouting, initiativeRecorded, replaySelections, finishReplay } from "./handoff.js";
+import { ID, authority, capture, snapshot, participants, effectiveSelection, prepareAutomaticScouting, initiativeBoundary, duringInitiative, initiativeRecorded, replaySelections, finishReplay } from "./handoff.js";
 
 const starts = new WeakMap();
 const stealthRolls = new WeakMap();
@@ -19,7 +19,7 @@ function ensureStealth(combat, c, options = {}, reroll = false) {
   const predecessor = stealthRolls.get(c);
   if (predecessor && !reroll) return predecessor;
   if (!predecessor && !reroll && recordedStealth(c)) return Promise.resolve();
-  const pending = (async () => {
+  const pending = duringInitiative(combat, [c.id], async boundary => {
     if (predecessor) await predecessor;
     await prepareAutomaticScouting(combat, [c.id]);
     if (!eligible() || (!reroll && recordedStealth(c))) return;
@@ -33,15 +33,16 @@ function ensureStealth(combat, c, options = {}, reroll = false) {
     if (!result && reroll) return;
     if (!result || !Number.isFinite(result.roll.total)) throw new Error(`Initiative did not complete for ${actor.name}.`);
     await combat.setInitiative(c.id, result.roll.total, "stealth");
-    await initiativeRecorded(combat);
-  })().finally(() => { if (stealthRolls.get(c) === pending) stealthRolls.delete(c); });
+    await initiativeRecorded(combat, boundary);
+  }).finally(() => { if (stealthRolls.get(c) === pending) stealthRolls.delete(c); });
   stealthRolls.set(c, pending);
   return pending;
 }
 
 export async function addedCombatant(combatant) {
+  const boundary = initiativeBoundary(combatant.parent, [combatant.id]);
   await ensureStealth(combatant.parent, combatant, { skipDialog: true });
-  await initiativeRecorded(combatant.parent);
+  await initiativeRecorded(combatant.parent, boundary);
 }
 
 export async function dispatchCombatStart(combat, updateData) {
@@ -71,7 +72,7 @@ export async function dispatchCombatStart(combat, updateData) {
   if (errors.length) throw new AggregateError(errors, "Encounter automation failed. Exploration cleanup and round advancement stopped. Resolve the error before retrying Begin Encounter.");
 }
 
-export async function rollMissing(combat) {
+export async function rollMissing(combat, boundary = initiativeBoundary(combat, combat.combatants.map(c => c.id))) {
   for (const c of [...combat.combatants]) {
     authority(combat);
     if (sneaking(c)) await ensureStealth(combat, c, { skipDialog: true });
@@ -85,7 +86,7 @@ export async function rollMissing(combat) {
     authority(combat);
   }
   if (combat.combatants.some(c => !Number.isFinite(c.initiative))) throw new Error("Some initiative rolls did not complete. Exploration selections were retained.");
-  await initiativeRecorded(combat);
+  await initiativeRecorded(combat, boundary);
 }
 
 export async function openingDefend(combat) {
@@ -131,9 +132,10 @@ async function automaticStart(combat) {
   for (const [module, setting] of [["pf2e-automations", "deleteExploration"], ["pf2e-avoid-notice", "raiseShields"]]) {
     if (game.modules.get(module)?.active && game.settings.get(module, setting)) throw new Error(`Disable ${module}.${setting} before automatic exploration handoff.`);
   }
+  const boundary = initiativeBoundary(combat, combat.combatants.map(c => c.id));
   await capture(combat);
   await prepareAutomaticScouting(combat, combat.combatants.filter(c => sneaking(c) && !recordedStealth(c)).map(c => c.id));
-  await rollMissing(combat);
+  await rollMissing(combat, boundary);
   committingStarts.add(combat);
   if (!game.user.isActiveGM) throw new Error("The active GM changed during encounter preparation.");
   // Await returned hook work before clearing the exploration selections it reads.
@@ -170,24 +172,28 @@ export async function trackerInitiative(wrapped, ...args) {
   rejectStartingInitiative(this);
   if (!automatic(this)) return wrapped(...args);
   const [ids = [], options = {}] = args;
-  await prepareAutomaticScouting(this, ids);
-  rejectStartingInitiative(this);
-  if (!automatic(this)) return this;
-  const avoiders = this.combatants.filter(c => ids.includes(c.id) && sneaking(c));
-  await Promise.all(avoiders.map(c => ensureStealth(this, c, options, true)));
-  rejectStartingInitiative(this);
-  if (!automatic(this)) return this;
-  const ordinary = ids.filter(id => !avoiders.some(c => c.id === id && sneaking(c)) && this.combatants.some(c => c.id === id));
-  const result = ordinary.length || !ids.length ? await wrapped(ordinary, ...args.slice(1)) : this;
-  await initiativeRecorded(this);
-  return result;
+  return duringInitiative(this, ids, async boundary => {
+    await prepareAutomaticScouting(this, ids);
+    rejectStartingInitiative(this);
+    if (!automatic(this)) return this;
+    const avoiders = this.combatants.filter(c => ids.includes(c.id) && sneaking(c));
+    await Promise.all(avoiders.map(c => ensureStealth(this, c, options, true)));
+    rejectStartingInitiative(this);
+    if (!automatic(this)) return this;
+    const ordinary = ids.filter(id => !avoiders.some(c => c.id === id && sneaking(c)) && this.combatants.some(c => c.id === id));
+    const result = ordinary.length || !ids.length ? await wrapped(ordinary, ...args.slice(1)) : this;
+    await initiativeRecorded(this, boundary);
+    return result;
+  });
 }
 
 export async function recordedInitiative(wrapped, ...args) {
   rejectStartingInitiative(this);
-  const result = await wrapped(...args);
-  await initiativeRecorded(this);
-  return result;
+  return duringInitiative(this, [args[0]], async boundary => {
+    const result = await wrapped(...args);
+    await initiativeRecorded(this, boundary);
+    return result;
+  });
 }
 
 export function registerAutomatic() {
