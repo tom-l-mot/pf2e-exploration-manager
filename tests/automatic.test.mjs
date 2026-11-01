@@ -176,19 +176,32 @@ test("stale replay recovers on the active GM and preserves user edits or mismatc
   await handoff.initiativeRecorded(combat);
   await handoff.replaySelections(combat);
   game.user.isActiveGM = false;
-  await handoff.recoverReplays();
+  await automatic.recoverReplays();
   assert.deepEqual(actor.system.exploration, ["avoid"]);
   game.user.isActiveGM = true;
-  await handoff.recoverReplays();
+  await automatic.recoverReplays();
   assert.deepEqual(actor.system.exploration, []);
   await handoff.replaySelections(combat);
   actor.system.exploration = ["user-edit"];
-  await handoff.recoverReplays();
+  await automatic.recoverReplays();
   assert.deepEqual(actor.system.exploration, ["user-edit"]);
   actor.system.exploration = ["avoid"];
   actor.flags.clearReceipt.clearedIds = ["other"];
-  await handoff.recoverReplays();
+  await automatic.recoverReplays();
   assert.deepEqual(actor.system.exploration, ["avoid"]);
+});
+
+test("a connection event cannot recover an actively awaited Begin replay", async () => {
+  const { actor, combat } = fixture({ ids: ["defend"], initiatives: [0] });
+  const gate = deferred(), entered = deferred();
+  Hooks.on("combatStart", async () => { entered.release(); await gate.promise; assert.deepEqual(actor.system.exploration, ["defend"]); });
+  const pending = startCombat.call(combat, () => assert.fail());
+  await entered.promise;
+  await automatic.recoverReplays();
+  assert.deepEqual(actor.system.exploration, ["defend"]);
+  gate.release();
+  await pending;
+  assert.deepEqual(actor.system.exploration, []);
 });
 
 test("Begin finishes its owned replay even when an encounter callback removes the actor", async () => {

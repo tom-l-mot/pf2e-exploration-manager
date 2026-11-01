@@ -1,5 +1,5 @@
-import { registerAutomatic, addedCombatant } from "./automatic.js";
-import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt, initiativeRecorded, recoverReplays, reconcileMarker } from "./handoff.js";
+import { registerAutomatic, addedCombatant, recoverReplays } from "./automatic.js";
+import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt, initiativeRecorded, reconcileMarker } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const reportError = error => { console.error(ID, error); ui.notifications.error(error.message); };

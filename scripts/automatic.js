@@ -161,6 +161,11 @@ export function startCombat(wrapped, ...args) {
   return pending;
 }
 
+export async function recoverReplays() {
+  if (!game.user.isActiveGM || game.system.id !== "pf2e") return;
+  for (const combat of game.combats.values()) if (!starts.has(combat)) await finishReplay(combat);
+}
+
 export async function trackerInitiative(wrapped, ...args) {
   rejectStartingInitiative(this);
   if (!automatic(this)) return wrapped(...args);

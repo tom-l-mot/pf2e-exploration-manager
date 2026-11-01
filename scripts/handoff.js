@@ -147,11 +147,6 @@ export function reconcileMarker(item) {
   });
 }
 
-export async function recoverReplays() {
-  if (!game.user.isActiveGM || game.system.id !== "pf2e") return;
-  for (const combat of game.combats.values()) await finishReplay(combat);
-}
-
 export function capture(combat) {
   const entries = captureEntries(combat);
   return queued(combat, () => saveCapture(combat, entries));
