@@ -1,5 +1,5 @@
-import { registerAutomatic, addedCombatant } from "./automatic.js";
-import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt } from "./handoff.js";
+import { registerAutomatic, addedCombatant, recoverReplays } from "./automatic.js";
+import { ID, participants, selection, snapshot, capture, clearEligible, restoreEligible, prepareScouting, expiredReceipt, reconcileMarker } from "./handoff.js";
 
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const reportError = error => { console.error(ID, error); ui.notifications.error(error.message); };
@@ -17,7 +17,7 @@ export function reviewContent(combat) {
     return `<tr><th scope="row">${escapeHTML(actor.name)}</th><td>${escapeHTML(current.join(", ") || "None")}</td><td>${escapeHTML(entry ? entry.labels.join(", ") || "None" : "Not captured")}</td><td>${escapeHTML(status)}<br>${escapeHTML(recovery)}</td></tr>`;
   }).join("");
   return `<p>Cleanup mode: ${escapeHTML(game.settings.get(ID, "cleanup"))}. Recovery is stored with this encounter. Restore before ending or deleting it. An expired receipt can be replaced by the next eligible clear.</p>
-    <p>Automatic mode waits for returned encounter callbacks before clearing eligible selections.</p>
+    <p>Automatic mode clears all native selections and known exploration markers after initiative. Saved activities remain available to encounter callbacks and recovery.</p>
     <table><thead><tr><th>Character</th><th>Current activities</th><th>Saved activities</th><th>Initiative and recovery</th></tr></thead><tbody>${rows}</tbody></table>
     <p>Automatic Begin Encounter resolves selected Defend with a usable held shield until the character's first turn.</p>
     <p>Automatic mode rolls Stealth when Avoid Notice characters join the tracker. Begin Encounter repairs their non-Stealth initiative. Recorded Stealth is preserved unless explicitly rerolled. Scout is prepared before automatic rolls; later Scouts do not change existing totals. Manual preparation remains available for recovery.</p>`;
@@ -61,7 +61,7 @@ export function registerSettings() {
     constructor() { super(configuration(game.combat)); }
   }
   game.settings.registerMenu(ID, "handoff", { name: "Exploration handoff", label: "Open handoff", hint: "Review the selected encounter, prepare Scout, clear, or restore activities.", icon: "fas fa-person-hiking", type: HandoffMenu, restricted: true });
-  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Automatic mode rolls Stealth for Avoid Notice on tracker entry. Begin Encounter repairs non-Stealth rolls, rolls missing initiative, waits for callbacks, clears selections, and resolves Defend.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Automatic" }, default: "automatic" });
+  game.settings.register(ID, "cleanup", { name: "Encounter cleanup", hint: "Automatic mode rolls Stealth for Avoid Notice on tracker entry and clears native selections and known markers after initiative. Begin Encounter preserves callback benefits and resolves Defend.", scope: "world", config: true, type: String, choices: { off: "Off", review: "Review", automatic: "Automatic" }, default: "automatic" });
   game.settings.register(ID, "scout", { name: "Enable pre-roll scouting preparation", hint: "Prepares canonical PF2e Scout effects before automatic tracker-entry rolls, Begin Encounter, or tracker initiative rolls. Later Scouts do not change existing totals.", scope: "world", config: true, type: Boolean, default: true });
 }
 
@@ -74,8 +74,16 @@ export async function encounterChanged(combat, { prompt = false } = {}) {
 }
 
 Hooks.once("init", registerSettings);
-Hooks.once("ready", registerAutomatic);
+Hooks.once("ready", () => { registerAutomatic(); void recoverReplays().catch(reportError); });
+Hooks.on("userConnected", () => recoverReplays().catch(reportError));
+Hooks.on("updateUser", (_user, changes) => {
+  if ("role" in changes) void recoverReplays().catch(reportError);
+});
 Hooks.on("createCombatant", combatant => { void addedCombatant(combatant).catch(reportError); });
+Hooks.on("updateCombatant", (combatant, changes) => {
+  if (Number.isFinite(changes.initiative)) void addedCombatant(combatant).catch(reportError);
+});
+Hooks.on("createItem", item => { void reconcileMarker(item).catch(reportError); });
 Hooks.on("updateCombat", (combat, changes) => {
   void encounterChanged(combat, { prompt: changes.round === 1 && changes.turn === 0 }).catch(reportError);
 });

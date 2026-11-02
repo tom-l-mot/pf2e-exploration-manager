@@ -1,13 +1,13 @@
 {
   "id": "pf2e-exploration-manager",
   "title": "PF2e Exploration Manager",
-  "description": "Automatically hand off native exploration activities when an encounter begins, with recoverable cleanup.",
-  "version": "0.2.3",
+  "description": "Clear native exploration activities after initiative while preserving encounter benefits and recovery.",
+  "version": "0.2.4",
   "compatibility": { "verified": "14.369" },
   "url": "https://github.com/tom-l-mot/pf2e-exploration-manager",
   "manifest": "https://github.com/tom-l-mot/pf2e-exploration-manager/releases/latest/download/module.json",
-  "download": "https://github.com/tom-l-mot/pf2e-exploration-manager/releases/download/v0.2.3/pf2e-exploration-manager-0.2.3.zip",
-  "authors": [{ "name": "Tom" }],
+  "download": "https://github.com/tom-l-mot/pf2e-exploration-manager/releases/download/v0.2.4/pf2e-exploration-manager-0.2.4.zip",
+  "authors": [{ "name": "tomLmot" }],
   "relationships": {
     "systems": [{ "id": "pf2e", "type": "system" }],
     "requires": [{ "id": "lib-wrapper", "type": "module" }]

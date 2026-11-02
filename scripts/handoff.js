@@ -1,12 +1,21 @@
 export const ID = "pf2e-exploration-manager";
 export const SCOUT = "Compendium.pf2e.other-effects.Item.EMqGwUi3VMhCjTlF";
 export const INCREDIBLE_SCOUT = "Compendium.pf2e.feat-effects.Item.la8rWwUtReElgTS6";
+export const SCOUT_DEDICATION = "Compendium.pf2e-automations.effects.Item.U7tuKcRePhSu2C2P";
+const MARKERS = new Set(["N8vpuGy4TzU10y8E", "F6vJYLZTWDpnrnCZ", "GYOyFj4ziZX060rZ", "OjRHL0B4WAUUQc13", "V347nnVBGDrVWh7k", "vNUrKvoOSvEnqzhM", "tDsgl8YmhZbx2May", "kh1QdKkvbNZ0qBsQ", "mGFBHM1lvHNZ9BsH", "XiVLHjg5lQVMX8Fj", "OcCXjJab7rSR3mDf", "SggYzuL9NtYoktUR", "ThF8UIN5093xtCaq"].map(id => `Compendium.pf2e-automations.effects.Item.${id}`));
+const CONSUMED = new Set([SCOUT, INCREDIBLE_SCOUT, SCOUT_DEDICATION, "Compendium.pf2e.other-effects.Item.VCSpuc3Tf3XWMkd3"]);
 let queue = Promise.resolve();
+const rollingBoundaries = new WeakMap();
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export const selection = actor => [...actor.system.exploration];
 export const avoidNotice = () => !!game.modules.get("pf2e-avoid-notice")?.active;
 export const snapshot = combat => combat.getFlag(ID, "handoff");
 const receipt = actor => actor.getFlag(ID, "clearReceipt");
+const matchingEntry = (combat, actor) => {
+  const owned = receipt(actor);
+  return !combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid) && owned?.combatUuid === combat.uuid && snapshot(combat)?.entries.find(entry => entry.actorUuid === actor.uuid && equal(entry.activityIds, owned.clearedIds));
+};
+export const effectiveSelection = (combat, actor) => selection(actor).length ? selection(actor) : matchingEntry(combat, actor)?.activityIds ?? [];
 
 export function expiredReceipt(owned) {
   const id = /^Combat\.([^.]+)$/.exec(owned?.combatUuid)?.[1];
@@ -46,15 +55,134 @@ function captureEntries(combat) {
   }));
 }
 
-async function saveCapture(combat, entries) {
+export function initiativeBoundary(combat, combatantIds) {
+  return captureEntries(combat).filter(entry => entry.combatantIds.some(id => combatantIds.includes(id)))
+    .map(entry => rollingBoundaries.get(combat)?.get(entry.actorUuid)?.entry ?? entry);
+}
+
+export async function duringInitiative(combat, combatantIds, operation) {
+  // Nested native writes and hooks must keep the selection captured before the roll.
+  const boundary = initiativeBoundary(combat, combatantIds);
+  const pending = rollingBoundaries.get(combat) ?? new Map();
+  rollingBoundaries.set(combat, pending);
+  for (const entry of boundary) {
+    const held = pending.get(entry.actorUuid) ?? { entry, count: 0 };
+    held.count++;
+    pending.set(entry.actorUuid, held);
+  }
+  try { return await operation(boundary); }
+  finally {
+    for (const entry of boundary) {
+      const held = pending.get(entry.actorUuid);
+      if (--held.count === 0) pending.delete(entry.actorUuid);
+    }
+    if (!pending.size) rollingBoundaries.delete(combat);
+  }
+}
+
+async function saveCapture(combat, entries, refresh = false, replaceOwned = false) {
   const existing = snapshot(combat);
   if (existing && (existing.version !== 1 || !Array.isArray(existing.entries))) throw new Error("Unsupported exploration snapshot.");
   const merged = [...(existing?.entries ?? [])];
-  for (const entry of entries) if (!merged.some(e => e.actorUuid === entry.actorUuid)) merged.push(entry);
-  if (!existing || merged.length !== existing.entries.length) {
+  for (const entry of entries) {
+    const index = merged.findIndex(e => e.actorUuid === entry.actorUuid);
+    if (index < 0) merged.push(entry);
+    else if (refresh) {
+      const owned = receipt(participants(combat).get(entry.actorUuid).actor);
+      if (!owned || expiredReceipt(owned) || (replaceOwned && entry.activityIds.length)) merged[index] = entry;
+    }
+  }
+  if (!existing || !equal(merged, existing.entries)) {
     authority(combat);
     await combat.setFlag(ID, "handoff", { version: 1, entries: merged });
   }
+}
+
+async function removeExplorationEffects(combat, actor) {
+  const ids = actor.items.filter(item => item.type === "effect" && (MARKERS.has(item.sourceId ?? item.flags?.core?.sourceId) || CONSUMED.has(item.sourceId ?? item.flags?.core?.sourceId))).map(item => item.id);
+  if (ids.length) {
+    authority(combat);
+    await actor.deleteEmbeddedDocuments("Item", ids);
+  }
+}
+
+export function initiativeRecorded(combat, boundary) {
+  if (!combat || !game.user.isActiveGM || game.system.id !== "pf2e" || game.combats.get(combat.id) !== combat || game.settings.get(ID, "cleanup") !== "automatic") return Promise.resolve();
+  const entries = boundary ?? captureEntries(combat);
+  return queued(combat, async () => {
+    if (game.settings.get(ID, "cleanup") !== "automatic") return;
+    const eligible = [...participants(combat).values()].filter(({ actor, combatants }) => receipt(actor)?.phase !== "replaying" && entries.some(entry => entry.actorUuid === actor.uuid && equal(selection(actor), entry.activityIds)) && combatants.every(c => Number.isFinite(c.initiative)));
+    const fresh = boundary ? entries.filter(entry => entry.activityIds.length && eligible.some(({ actor }) => actor.uuid === entry.actorUuid)) : [];
+    await saveCapture(combat, entries.filter(entry => eligible.some(({ actor }) => actor.uuid === entry.actorUuid)), true, !!boundary);
+    for (const { actor, combatants } of eligible) {
+      authority(combat);
+      const current = participants(combat).get(actor.uuid);
+      if (!current || current.actor !== actor || current.combatants.some(c => !Number.isFinite(c.initiative)) || combatants.some(c => !Number.isFinite(c.initiative))) continue;
+      const owned = receipt(actor);
+      if (owned?.phase === "replaying") continue;
+      const renewed = fresh.some(entry => entry.actorUuid === actor.uuid && equal(selection(actor), entry.activityIds));
+      if (!renewed && combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) continue;
+      if (!renewed && owned && !expiredReceipt(owned)) {
+        if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);
+        continue;
+      }
+      const entry = snapshot(combat).entries.find(entry => entry.actorUuid === actor.uuid);
+      if (!entry.activityIds.length) {
+        if (!selection(actor).length) await removeExplorationEffects(combat, actor);
+        continue;
+      }
+      if (!equal(selection(actor), entry.activityIds)) continue;
+      if (renewed && combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) {
+        await combat.setFlag(ID, "restoredActorUuids", combat.getFlag(ID, "restoredActorUuids").filter(uuid => uuid !== actor.uuid));
+        authority(combat);
+        const latest = participants(combat).get(actor.uuid);
+        if (!latest || latest.actor !== actor || !equal(selection(actor), entry.activityIds) || latest.combatants.some(c => !Number.isFinite(c.initiative))) continue;
+      }
+      await actor.update({ "system.exploration": [], [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "cleared" } }, { noHook: true });
+      authority(combat);
+      if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);
+    }
+  });
+}
+
+export function replaySelections(combat) {
+  return queued(combat, async () => {
+    for (const { actor } of participants(combat).values()) {
+      const entry = matchingEntry(combat, actor);
+      if (!entry || selection(actor).length || combat.getFlag(ID, "restoredActorUuids")?.includes(actor.uuid)) continue;
+      authority(combat);
+      await actor.update({ "system.exploration": entry.activityIds, [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "replaying" } }, { noHook: true });
+    }
+  });
+}
+
+export function finishReplay(combat) {
+  return queued(combat, async () => {
+    for (const saved of snapshot(combat)?.entries ?? []) {
+      const actor = participants(combat).get(saved.actorUuid)?.actor ?? await fromUuid(saved.actorUuid);
+      authority(combat);
+      if (!actor) continue;
+      const entry = matchingEntry(combat, actor);
+      if (!entry || receipt(actor)?.phase !== "replaying") continue;
+      authority(combat);
+      const update = { [`flags.${ID}.clearReceipt`]: { combatUuid: combat.uuid, clearedIds: entry.activityIds, phase: "cleared" } };
+      if (equal(selection(actor), entry.activityIds)) update["system.exploration"] = [];
+      await actor.update(update, { noHook: true });
+      authority(combat);
+      if (matchingEntry(combat, actor) && !selection(actor).length) await removeExplorationEffects(combat, actor);
+    }
+  });
+}
+
+export function reconcileMarker(item) {
+  const actor = item.parent;
+  if (!game.user.isActiveGM || game.system.id !== "pf2e" || game.settings.get(ID, "cleanup") !== "automatic" || actor?.type !== "character" || item.type !== "effect" || !MARKERS.has(item.sourceId ?? item.flags?.core?.sourceId)) return Promise.resolve();
+  const combat = game.combats.get(/^Combat\.([^.]+)$/.exec(receipt(actor)?.combatUuid)?.[1]);
+  if (!combat) return Promise.resolve();
+  return queued(combat, async () => {
+    if (!matchingEntry(combat, actor) || selection(actor).length || !actor.items.get(item.id)) return;
+    await actor.deleteEmbeddedDocuments("Item", [item.id]);
+  });
 }
 
 export function capture(combat) {
@@ -133,7 +261,7 @@ function hasScoutingEffect(actor, incredible) {
   return actor.items.some(item => {
     if (item.type !== "effect") return false;
     const source = item.sourceId ?? item.flags?.core?.sourceId;
-    const strength = source === INCREDIBLE_SCOUT || item.system.slug === "effect-scout-incredible-scout" ? 2
+    const strength = source === INCREDIBLE_SCOUT || source === SCOUT_DEDICATION || item.system.slug === "effect-scout-incredible-scout" ? 2
       : source === SCOUT || item.system.slug === "effect-scout" ? 1 : 0;
     return strength >= value || item.system.rules?.some(rule => rule.key === "FlatModifier" && rule.slug === "scouting-bonus" && rule.type === "circumstance" && [rule.selector].flat().includes("initiative") && rule.value >= value);
   });
@@ -144,9 +272,9 @@ export function prepareAutomaticScouting(combat, rollingIds = []) {
     if (!game.settings.get(ID, "scout") || combat.started) return;
     const party = [...participants(combat).values()];
     const allies = party.filter(({ actor }) => actor.alliance === "party");
-    const scouts = allies.filter(({ actor }) => selection(actor).some(id => actor.items.get(id)?.system.slug === "scout"));
+    const scouts = allies.filter(({ actor }) => effectiveSelection(combat, actor).some(id => actor.items.get(id)?.system.slug === "scout"));
     if (!scouts.length) return;
-    const incredible = scouts.some(({ actor }) => actor.items.some(item => item.type === "feat" && item.system.slug === "incredible-scout"));
+    const incredible = scouts.some(({ actor }) => actor.items.some(item => item.type === "feat" && ["incredible-scout", "scout-dedication"].includes(item.system.slug)));
     const sourceId = incredible ? INCREDIBLE_SCOUT : SCOUT;
     const effect = await fromUuid(sourceId);
     authority(combat);
@@ -154,7 +282,7 @@ export function prepareAutomaticScouting(combat, rollingIds = []) {
     for (const { actor, combatants } of allies) {
       authority(combat);
       if (combat.started) throw new Error("The encounter started during Scout preparation.");
-      if (combatants.some(c => Number.isFinite(c.initiative) && !rollingIds.includes(c.id)) || hasScoutingEffect(actor, incredible)) continue;
+      if ((combatants.some(c => Number.isFinite(c.initiative)) && !combatants.some(c => rollingIds.includes(c.id))) || hasScoutingEffect(actor, incredible)) continue;
       const data = effect.toObject();
       delete data._id;
       data.flags ??= {};
